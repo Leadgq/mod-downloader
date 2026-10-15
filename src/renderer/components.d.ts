@@ -15,6 +15,5 @@ declare module 'vue' {
     ElSlider: typeof import('element-plus/es')['ElSlider']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
-    Test: typeof import('./src/components/test.vue')['default']
   }
 }

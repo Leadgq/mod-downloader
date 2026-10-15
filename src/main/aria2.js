@@ -124,7 +124,11 @@ export function createAria2Service({ getWindow }) {
         `--rpc-listen-port=${port}`,
         `--rpc-secret=${secret}`,
         '--quiet=true',
-        '--continue=true'
+        '--continue=true',
+        // RPC 里的 -x/-s 不能超过启动时的上限；默认分别是 1 和 5
+        '--max-connection-per-server=16',
+        '--split=16',
+        '--min-split-size=1M'
       ],
       { stdio: 'ignore', windowsHide: true }
     )
@@ -190,16 +194,11 @@ export function createAria2Service({ getWindow }) {
       try {
         const current = await rpc('aria2.tellStatus', [gid, ['status']])
         if (current.status === 'active' || current.status === 'waiting') {
-          throw new Error('已有任务在下载')
+          throw new Error('已有任务在下载，请先取消再改并发')
         }
-        if (current.status === 'paused') {
-          await rpc('aria2.unpause', [gid])
-          startPoll()
-          return { gid }
-        }
-        await rpc('aria2.remove', [gid]).catch(() => {})
+        await rpc('aria2.forceRemove', [gid]).catch(() => {})
       } catch (error) {
-        if (error.message === '已有任务在下载') throw error
+        if (error.message.includes('已有任务在下载')) throw error
       }
       gid = null
     }
@@ -213,6 +212,7 @@ export function createAria2Service({ getWindow }) {
       dir: payload.dir,
       split: String(connections),
       'max-connection-per-server': String(connections),
+      'min-split-size': '1M',
       continue: 'true'
     }
     if (payload.filename) options.out = payload.filename

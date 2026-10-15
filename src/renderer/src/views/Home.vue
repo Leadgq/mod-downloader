@@ -71,7 +71,7 @@
     </div>
 
     <section class="progress-card" aria-live="polite">
-      <div v-if="progress.status === 'idle'" class="empty">还没有任务</div>
+      <div v-if="progress.status === 'idle' && !fileLabel" class="empty">还没有任务</div>
       <template v-else>
         <div class="progress-meta">
           <strong>{{ statusLabel }}</strong>
@@ -93,10 +93,19 @@
           </div>
           <div>
             <dt>连接</dt>
-            <dd class="font-mono-num">{{ progress.connections || 0 }}</dd>
+            <dd class="font-mono-num">{{ progress.connections || 0 }} / {{ store.connections }}</dd>
           </div>
         </dl>
-        <p v-if="progress.filename" class="filename">{{ progress.filename }}</p>
+        <div v-if="fileLabel" class="file-row">
+          <p class="filename">{{ fileLabel }}</p>
+          <el-button
+            :icon="FolderOpened"
+            circle
+            plain
+            aria-label="打开文件夹"
+            @click="openFolder"
+          />
+        </div>
         <p v-if="progress.errorMessage" class="error">{{ progress.errorMessage }}</p>
       </template>
     </section>
@@ -106,7 +115,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Delete } from '@element-plus/icons-vue'
+import { Delete, FolderOpened } from '@element-plus/icons-vue'
 import { useConfigStore } from '@renderer/store'
 
 const store = useConfigStore()
@@ -119,7 +128,8 @@ const progress = reactive({
   connections: 0,
   errorMessage: '',
   percent: 0,
-  filename: ''
+  filename: '',
+  dir: ''
 })
 
 let stopProgress = null
@@ -135,10 +145,14 @@ const statusLabel = computed(() => {
     active: '下载中',
     paused: '已暂停',
     complete: '已完成',
-    error: '失败'
+    error: '失败',
+    idle: '已取消，文件仍保留'
   }
   return map[progress.status] || progress.status
 })
+
+const fileLabel = computed(() => progress.filename || store.filename || '')
+const folderPath = computed(() => progress.dir || store.dir || '')
 
 const remainingText = computed(() => {
   const left = progress.totalLength - progress.completedLength
@@ -240,6 +254,19 @@ async function onCancel() {
     await window.api.cancel()
   } catch (error) {
     ElMessage.error(error.message || '取消失败')
+  }
+}
+
+async function openFolder() {
+  const dir = folderPath.value
+  if (!dir) {
+    ElMessage.error('还没有保存目录')
+    return
+  }
+  try {
+    await window.api.openDir(dir)
+  } catch (error) {
+    ElMessage.error(error.message || '打开文件夹失败')
   }
 }
 
@@ -392,13 +419,22 @@ h1 {
   font-size: 14px;
 }
 
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 .filename,
 .error {
-  margin-top: 12px;
   font-size: 13px;
 }
 
 .filename {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
   color: #8b93a7;
   overflow-wrap: anywhere;
 }
