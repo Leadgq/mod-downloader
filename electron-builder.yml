@@ -1,5 +1,5 @@
-appId: com.electron.app
-productName: electron-template
+appId: com.moddownloader.app
+productName: mod-downloader
 directories:
   buildResources: build
 files:
@@ -10,8 +10,11 @@ files:
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
 asarUnpack:
   - resources/**
+extraResources:
+  - from: resources/bin
+    to: bin
 win:
-  executableName: electron-template
+  executableName: mod-downloader
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}

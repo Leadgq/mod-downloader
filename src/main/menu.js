@@ -1,8 +1,8 @@
-const { app, Menu, shell } = require('electron')
+import { app, Menu, shell } from 'electron'
 
 const isMac = process.platform === 'darwin'
 
-export const createMenu = (wind) => {
+export const createMenu = ({ getDownloadDir } = {}) => {
   const config = [
     ...(isMac
       ? [
@@ -10,7 +10,6 @@ export const createMenu = (wind) => {
             label: app.name,
             submenu: [
               { role: 'about' },
-              { role: 'services' },
               { type: 'separator' },
               { role: 'hide' },
               { role: 'hideOthers' },
@@ -22,33 +21,19 @@ export const createMenu = (wind) => {
         ]
       : []),
     {
-      label: '查看',
+      label: '文件',
       submenu: [
         {
-          label: '地址'
-        },
-        isMac ? { role: 'close' } : { role: 'quit' },
-        {
-          label: '发送事件',
-          click: () => {
-            wind.webContents.send('menuEvent', 'hello electron')
-          }
-        }
-      ]
-    },
-    {
-      label: '操作',
-      submenu: [
-        {
-          label: '打开网站',
-          click: () => {
-            shell.openExternal('http://www.baidu.com')
+          label: '打开下载目录',
+          click: async () => {
+            const dir = getDownloadDir?.()
+            if (dir) {
+              await shell.openPath(dir)
+            }
           }
         },
         { type: 'separator' },
-        {
-          label: '测试'
-        }
+        isMac ? { role: 'close' } : { role: 'quit' }
       ]
     }
   ]

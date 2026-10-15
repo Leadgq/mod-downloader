@@ -1,24 +1,109 @@
-body,
-html {
-  @apply bg-slate-100 w-[100vw] h-[100vh];
+:root {
+  --bg: #050608;
+  --surface: #0e1116;
+  --surface-raised: #141821;
+  --border: #1c212b;
+  --text: #e8edf5;
+  --muted: #8b93a7;
+  --accent: #3ddc97;
+  --accent-dim: #1f8f62;
+  --danger: #f07178;
+  --el-color-primary: #3ddc97;
+  --el-color-primary-light-3: #6ae5b0;
+  --el-color-primary-light-5: #8eebc4;
+  --el-color-primary-light-7: #b3f2d7;
+  --el-color-primary-light-9: #1a2a24;
+  --el-color-primary-dark-2: #2bb57a;
+  --el-bg-color: var(--surface);
+  --el-bg-color-overlay: var(--surface-raised);
+  --el-fill-color-blank: var(--surface);
+  --el-text-color-primary: var(--text);
+  --el-text-color-regular: var(--text);
+  --el-text-color-placeholder: var(--muted);
+  --el-border-color: var(--border);
+  --el-border-color-hover: #2a3344;
+  --el-fill-color: #12161e;
+  --el-fill-color-light: #12161e;
+  --el-disabled-bg-color: #12161e;
+}
+
+html,
+body {
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Sora', 'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', sans-serif;
+}
+
+body {
+  overflow-y: auto;
 }
 
 #app {
-  @apply h-full w-full;
+  min-height: 100vh;
+  width: 100%;
+}
+
+.font-mono-num {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
 }
 
 ::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
+  width: 6px;
+  height: 6px;
 }
+
 ::-webkit-scrollbar-track {
-  border-radius: 3px;
-  background: rgba(0, 0, 0, 0.06);
-  -webkit-box-shadow: inset 0 0 5px rgba(0, 0, 0, 0.08);
+  background: transparent;
 }
-/* 滚动条滑块 */
+
 ::-webkit-scrollbar-thumb {
-  border-radius: 3px;
-  background: rgba(0, 0, 0, 0.12);
-  -webkit-box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.2);
+  border-radius: 999px;
+  background: #2a3344;
+}
+
+.el-input__wrapper,
+.el-textarea__inner,
+.el-input-number {
+  background-color: #12161e !important;
+  box-shadow: 0 0 0 1px var(--border) inset !important;
+}
+
+.el-input__wrapper:hover,
+.el-input__wrapper.is-focus,
+.el-textarea__inner:hover,
+.el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px var(--accent-dim) inset !important;
+}
+
+.el-input__inner,
+.el-textarea__inner {
+  color: var(--text) !important;
+}
+
+.el-collapse {
+  --el-collapse-header-bg-color: transparent;
+  --el-collapse-content-bg-color: transparent;
+  --el-collapse-header-text-color: var(--muted);
+  --el-collapse-border-color: var(--border);
+  border: none;
+}
+
+.el-progress-bar__outer {
+  background-color: #1a2030 !important;
+}
+
+.el-slider {
+  --el-slider-main-bg-color: #3ddc97;
+  --el-slider-runway-bg-color: #1a2030;
+  --el-slider-button-size: 16px;
+}
+
+.el-slider__bar {
+  background-color: #3ddc97 !important;
+}
+
+.el-slider__button {
+  border-color: #3ddc97 !important;
 }

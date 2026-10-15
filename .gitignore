@@ -3,3 +3,6 @@ dist
 out
 .DS_Store
 *.log*
+resources/bin/win32/*.exe
+resources/bin/win32/*.zip
+

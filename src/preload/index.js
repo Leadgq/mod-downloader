@@ -1,12 +1,24 @@
-import { contextBridge } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
-// Custom APIs for renderer
-const api = {}
+function toPlain(value) {
+  return JSON.parse(JSON.stringify(value ?? null))
+}
 
-// Use `contextBridge` APIs to expose Electron APIs to
-// renderer only if context isolation is enabled, otherwise
-// just add to the DOM global.
+const api = {
+  start: (payload) => ipcRenderer.invoke('download:start', toPlain(payload)),
+  pause: () => ipcRenderer.invoke('download:pause'),
+  resume: () => ipcRenderer.invoke('download:resume'),
+  cancel: () => ipcRenderer.invoke('download:cancel'),
+  chooseDir: () => ipcRenderer.invoke('download:chooseDir'),
+  openDir: (dir) => ipcRenderer.invoke('download:openDir', dir),
+  onProgress: (callback) => {
+    const listener = (_event, data) => callback(data)
+    ipcRenderer.on('download:progress', listener)
+    return () => ipcRenderer.removeListener('download:progress', listener)
+  }
+}
+
 if (process.contextIsolated) {
   try {
     contextBridge.exposeInMainWorld('electron', electronAPI)

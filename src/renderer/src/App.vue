@@ -1,7 +1,7 @@
 <script setup></script>
 
 <template>
-  <div>
+  <div class="app-shell">
     <RouterView v-slot="{ Component }">
       <Suspense>
         <component :is="Component"></component>
@@ -10,4 +10,8 @@
   </div>
 </template>
 
-<style lang="less"></style>
+<style scoped>
+.app-shell {
+  min-height: 100%;
+}
+</style>
