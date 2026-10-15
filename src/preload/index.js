@@ -5,17 +5,31 @@ function toPlain(value) {
   return JSON.parse(JSON.stringify(value ?? null))
 }
 
+async function invoke(channel, ...args) {
+  try {
+    return await ipcRenderer.invoke(channel, ...args)
+  } catch (error) {
+    throw new Error(
+      error.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '')
+    )
+  }
+}
+
 const api = {
-  start: (payload) => ipcRenderer.invoke('download:start', toPlain(payload)),
-  pause: () => ipcRenderer.invoke('download:pause'),
-  resume: () => ipcRenderer.invoke('download:resume'),
-  cancel: () => ipcRenderer.invoke('download:cancel'),
-  chooseDir: () => ipcRenderer.invoke('download:chooseDir'),
-  openDir: (dir) => ipcRenderer.invoke('download:openDir', dir),
-  onProgress: (callback) => {
+  list: () => invoke('download:list'),
+  add: (payload) => invoke('download:add', toPlain(payload)),
+  pause: (id) => invoke('download:pause', id),
+  resume: (id, payload) => invoke('download:resume', id, toPlain(payload)),
+  cancel: (id) => invoke('download:cancel', id),
+  remove: (id) => invoke('download:remove', id),
+  setConcurrency: (value) => invoke('download:concurrency', value),
+  openTarget: (id, kind) => invoke('download:openTarget', id, kind),
+  chooseDir: () => invoke('download:chooseDir'),
+  openDir: (dir) => invoke('download:openDir', dir),
+  onChange: (callback) => {
     const listener = (_event, data) => callback(data)
-    ipcRenderer.on('download:progress', listener)
-    return () => ipcRenderer.removeListener('download:progress', listener)
+    ipcRenderer.on('download:changed', listener)
+    return () => ipcRenderer.removeListener('download:changed', listener)
   }
 }
 

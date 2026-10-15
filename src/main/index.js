@@ -6,9 +6,7 @@ import { createMenu } from './menu'
 import { createAria2Service } from './aria2'
 
 let mainWindow = null
-const aria2 = createAria2Service({
-  getWindow: () => mainWindow
-})
+let aria2
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -50,21 +48,14 @@ function createWindow() {
 }
 
 function registerIpc() {
-  ipcMain.handle('download:start', async (_event, payload) => {
-    return aria2.start(payload)
-  })
-
-  ipcMain.handle('download:pause', async () => {
-    return aria2.pause()
-  })
-
-  ipcMain.handle('download:resume', async () => {
-    return aria2.resume()
-  })
-
-  ipcMain.handle('download:cancel', async () => {
-    return aria2.cancel()
-  })
+  ipcMain.handle('download:list', () => aria2.list())
+  ipcMain.handle('download:add', (_event, payload) => aria2.add(payload))
+  ipcMain.handle('download:pause', (_event, id) => aria2.pause(id))
+  ipcMain.handle('download:resume', (_event, id, payload) => aria2.resume(id, payload))
+  ipcMain.handle('download:cancel', (_event, id) => aria2.cancel(id))
+  ipcMain.handle('download:remove', (_event, id) => aria2.remove(id))
+  ipcMain.handle('download:concurrency', (_event, value) => aria2.setConcurrency(value))
+  ipcMain.handle('download:openTarget', (_event, id, kind) => aria2.openTarget(id, kind, shell))
 
   ipcMain.handle('download:chooseDir', async () => {
     const result = await dialog.showOpenDialog(mainWindow ?? undefined, {
@@ -81,6 +72,7 @@ function registerIpc() {
 }
 
 app.whenReady().then(() => {
+  aria2 = createAria2Service({ getWindow: () => mainWindow })
   electronApp.setAppUserModelId('com.moddownloader.app')
 
   app.on('browser-window-created', (_, window) => {
@@ -101,6 +93,10 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('before-quit', () => {
-  aria2.destroy()
+let quitting = false
+app.on('before-quit', (event) => {
+  if (quitting || !aria2) return
+  event.preventDefault()
+  quitting = true
+  aria2.destroy().finally(() => app.quit())
 })

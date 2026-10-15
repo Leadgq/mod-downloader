@@ -1,4 +1,5 @@
-:root {
+:root,
+html.dark {
   --bg: #050608;
   --surface: #0e1116;
   --surface-raised: #141821;
@@ -80,6 +81,12 @@ body {
 .el-input__inner,
 .el-textarea__inner {
   color: var(--text) !important;
+}
+
+.el-button--primary:not(.is-plain) {
+  --el-button-text-color: #052819;
+  --el-button-hover-text-color: #052819;
+  --el-button-active-text-color: #052819;
 }
 
 .el-collapse {
