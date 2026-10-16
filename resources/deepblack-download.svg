@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="tile" x1="80" y1="32" x2="432" y2="480" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#202D2B"/>
+      <stop offset="0.5" stop-color="#11191C"/>
+      <stop offset="1" stop-color="#090E13"/>
+    </linearGradient>
+    <linearGradient id="arrow" x1="256" y1="124" x2="256" y2="326" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8BF3C8"/>
+      <stop offset="1" stop-color="#3DDC97"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="96" y1="32" x2="400" y2="480" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#53645F"/>
+      <stop offset="1" stop-color="#202D32"/>
+    </linearGradient>
+  </defs>
+  <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#tile)"/>
+  <rect x="26" y="26" width="460" height="460" rx="106" stroke="url(#rim)" stroke-width="3"/>
+  <path d="M256 132V310M164 234L256 326L348 234" stroke="url(#arrow)" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M142 330V364Q142 388 166 388H346Q370 388 370 364V330" stroke="#8EADA4" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

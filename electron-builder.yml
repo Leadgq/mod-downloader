@@ -14,8 +14,11 @@ extraResources:
   - from: resources/bin
     to: bin
 win:
+  icon: build/deepblack-download.ico
   executableName: mod-downloader
 nsis:
+  installerIcon: build/deepblack-download.ico
+  uninstallerIcon: build/deepblack-download.ico
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
