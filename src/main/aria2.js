@@ -3,6 +3,9 @@ import { join } from 'path'
 import { existsSync } from 'fs'
 import { createAria2Driver } from './aria2-driver.mjs'
 import { createTaskManager } from './task-manager.mjs'
+import { createHlsDriver } from './hls.mjs'
+import { createCompositeDriver } from './driver.mjs'
+import { chromiumFetch } from './chromium-fetch.mjs'
 
 export function createAria2Service({ getWindow }) {
   const binary = process.platform === 'win32' ? 'aria2c.exe' : 'aria2c'
@@ -10,7 +13,10 @@ export function createAria2Service({ getWindow }) {
     ? join(process.resourcesPath, 'bin', process.platform, binary)
     : join(app.getAppPath(), 'resources', 'bin', process.platform, binary)
   const manager = createTaskManager({
-    driver: createAria2Driver({ exe }),
+    driver: createCompositeDriver({
+      aria2: createAria2Driver({ exe }),
+      hls: createHlsDriver({ fetchImpl: chromiumFetch })
+    }),
     historyPath: join(app.getPath('userData'), 'download-history.json'),
     onChange: (state) => {
       const window = getWindow()

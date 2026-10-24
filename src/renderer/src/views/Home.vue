@@ -234,7 +234,7 @@
             id="task-url"
             v-model="form.url"
             autofocus
-            placeholder="https://example.com/file.zip"
+            placeholder="https://example.com/file.zip 或视频/音频 .m3u8 链接"
             :disabled="submitting"
           />
         </div>
