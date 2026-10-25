@@ -12,10 +12,18 @@ export function createAria2Service({ getWindow }) {
   const exe = app.isPackaged
     ? join(process.resourcesPath, 'bin', process.platform, binary)
     : join(app.getAppPath(), 'resources', 'bin', process.platform, binary)
+  // ffmpeg 与 aria2c 同目录打包；缺失时 HLS 下载完保留 .ts，不转封装
+  const ffmpegName = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
+  const ffmpegPath = app.isPackaged
+    ? join(process.resourcesPath, 'bin', process.platform, ffmpegName)
+    : join(app.getAppPath(), 'resources', 'bin', process.platform, ffmpegName)
   const manager = createTaskManager({
     driver: createCompositeDriver({
       aria2: createAria2Driver({ exe }),
-      hls: createHlsDriver({ fetchImpl: chromiumFetch })
+      hls: createHlsDriver({
+        fetchImpl: chromiumFetch,
+        ffmpegPath: existsSync(ffmpegPath) ? ffmpegPath : ''
+      })
     }),
     historyPath: join(app.getPath('userData'), 'download-history.json'),
     onChange: (state) => {

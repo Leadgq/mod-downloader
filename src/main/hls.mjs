@@ -1,4 +1,5 @@
 import { randomUUID, createDecipheriv } from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { createWriteStream, existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { once } from 'node:events'
 import { readFile, rename, writeFile } from 'node:fs/promises'
@@ -180,7 +181,8 @@ function targetName(task, playlistUrl, ext) {
 export function createHlsDriver({
   fetchImpl = fetch,
   userAgent = BROWSER_USER_AGENT,
-  maxRetries = 3
+  maxRetries = 3,
+  ffmpegPath = ''
 } = {}) {
   const jobs = new Map()
 
@@ -376,6 +378,59 @@ export function createHlsDriver({
     }
   }
 
+  function runFfmpeg(args) {
+    return new Promise((resolve) => {
+      const child = spawn(ffmpegPath, args, { windowsHide: true })
+      let stderr = ''
+      child.stderr?.on('data', (chunk) => {
+        stderr += chunk.toString()
+        if (stderr.length > 64 * 1024) stderr = stderr.slice(-32 * 1024)
+      })
+      child.on('error', () => resolve({ ok: false, stderr: '' }))
+      child.on('close', (code) => resolve({ ok: code === 0, stderr }))
+    })
+  }
+
+  // 合并出 .ts 后，若内置 ffmpeg 可用则无损转封装为 .m4a/.mp4，方便手机直接播放。
+  // 转封装失败不致命：保留 .ts，任务照常完成。
+  async function remux(job) {
+    if (!ffmpegPath || !existsSync(ffmpegPath) || !job.finalPath.endsWith('.ts')) return
+    // -i 不带输出参数时 ffmpeg 必然报错退出，但 stderr 里带完整的流信息
+    const probe = await runFfmpeg(['-hide_banner', '-i', job.finalPath])
+    const hasVideo = /Stream #\d+:\d+.*: Video:/.test(probe.stderr)
+    const target = job.finalPath.replace(/\.ts$/, hasVideo ? '.mp4' : '.m4a')
+    if (existsSync(target)) return
+    const temp = `${target}.remuxing`
+    rmSync(temp, { force: true })
+    // 输出格式显式指定（ipod 即 m4a），临时文件的后缀 ffmpeg 不认识
+    const result = await runFfmpeg([
+      '-y',
+      '-hide_banner',
+      '-i',
+      job.finalPath,
+      '-c',
+      'copy',
+      '-movflags',
+      '+faststart',
+      '-f',
+      hasVideo ? 'mp4' : 'ipod',
+      temp
+    ])
+    if (!result.ok) {
+      rmSync(temp, { force: true })
+      return
+    }
+    try {
+      await rename(temp, target)
+      rmSync(job.finalPath, { force: true })
+      job.finalPath = target
+      job.completedBytes = statSync(target).size
+      job.totalEstimate = job.completedBytes
+    } catch {
+      rmSync(temp, { force: true })
+    }
+  }
+
   // 领取下一个未完成的分片；跳过已完成（含上次运行遗留）的索引
   function takeSegment(job) {
     while (job.cursor < job.plan.total && job.doneSet.has(job.cursor)) job.cursor++
@@ -426,6 +481,7 @@ export function createHlsDriver({
       if (job.done >= job.plan.total) {
         job.totalEstimate = Math.max(job.totalEstimate, job.completedBytes)
         await merge(job)
+        await remux(job)
         job.status = 'complete'
       } else {
         // 有分片始终没下下来（不应发生），避免任务卡在 active

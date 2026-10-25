@@ -411,3 +411,64 @@ test('与任务管理器集成：m3u8 任务走完整的添加、轮询、暂停
   assert.equal(task.filename, 'video.ts')
   assert.deepEqual(readFileSync(join(dir, 'video.ts')), Buffer.concat(segments))
 })
+
+test('remux：下载完成后用内置 ffmpeg 无损转封装为 m4a', async (t) => {
+  const { spawnSync } = await import('node:child_process')
+  const { fileURLToPath } = await import('node:url')
+  const ffmpegPath = fileURLToPath(new URL('../resources/bin/win32/ffmpeg.exe', import.meta.url))
+  if (!existsSync(ffmpegPath)) return t.skip('本机未放置 ffmpeg.exe，跳过转封装测试')
+
+  // 用 ffmpeg 生成 1 秒真实 AAC 音频的 TS 分片
+  const workdir = mkdtempSync(join(tmpdir(), 'mod-remux-'))
+  const tsFile = join(workdir, 'sample.ts')
+  const made = spawnSync(ffmpegPath, [
+    '-y',
+    '-hide_banner',
+    '-f',
+    'lavfi',
+    '-i',
+    'sine=frequency=440:duration=1',
+    '-c:a',
+    'aac',
+    tsFile
+  ])
+  assert.equal(made.status, 0, `生成测试 TS 失败：${made.stderr?.toString().slice(-400)}`)
+  const media = readFileSync(tsFile)
+
+  const dir = mkdtempSync(join(tmpdir(), 'mod-hls-'))
+  const base = await startServer(t, (request, response) => {
+    const url = new URL(request.url, 'http://x')
+    if (url.pathname === '/audio.m3u8') {
+      response.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' })
+      response.end('#EXTM3U\n#EXTINF:1,\na0.ts\n#EXT-X-ENDLIST')
+      return
+    }
+    if (url.pathname === '/a0.ts') {
+      response.writeHead(200)
+      response.end(media)
+      return
+    }
+    response.writeHead(404)
+    response.end()
+  })
+
+  const driver = createHlsDriver({ ffmpegPath })
+  t.after(() => driver.destroy())
+  const gid = await driver.add(
+    { uri: `${base}/audio.m3u8`, dir, filename: '', connectionsLimit: 1 },
+    ''
+  )
+  let status
+  await until(async () => {
+    status = await driver.status(gid)
+    return status.status !== 'active'
+  }, 20000)
+  assert.equal(status.status, 'complete', status.errorMessage)
+
+  const finalFile = status.files[0].path
+  assert.ok(finalFile.endsWith('.m4a'), `应转成 m4a，实际：${finalFile}`)
+  assert.ok(existsSync(finalFile))
+  assert.equal(existsSync(join(dir, 'audio.ts')), false, '.ts 应被清理')
+  // MP4 系容器第 4-8 字节是 ftyp
+  assert.equal(readFileSync(finalFile).subarray(4, 8).toString(), 'ftyp')
+})
