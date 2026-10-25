@@ -655,17 +655,22 @@ export function createHlsDriver({
     async resume(gid) {
       const job = findJob(gid)
       if (job.status !== 'paused') return
+      // 必须在翻转状态前等旧循环退出：旧 worker 靠 paused/中止信号离开，
+      // 先改状态会让它误以为一切照旧，新 start 被无限推迟
+      if (job.running) await job.runPromise.catch(() => {})
       job.controller = new AbortController()
       job.status = 'active'
       job.errorMessage = ''
       job.lastSample = { time: 0, bytes: 0 }
-      // 手动继续视为新开始：宽恕失败历史，恢复满编并发
+      // 手动继续 = 全新开始：丢弃毒队列和内存里的旧列表（重拉可拿到新签名地址），
+      // 清零计数（completedBytes 会在扫描磁盘分片时重建，不清会翻倍）
       job.attempts = {}
+      job.retries = []
+      job.plan = null
+      job.completedBytes = 0
+      job.totalEstimate = 0
       job.currentLimit = 0
-      log(`${job.gid} 手动继续，重置调速`)
-      // 旧一轮的 worker 最多再等一个退避周期；等它退出后再满编重启，
-      // 否则 start 会被"已在运行"挡掉，任务只剩旧轮次的残兵
-      if (job.running) await job.runPromise.catch(() => {})
+      log(`${job.gid} 手动继续，重拉列表并重置调速`)
       void start(job)
     },
     async remove(gid) {
