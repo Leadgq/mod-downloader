@@ -472,3 +472,110 @@ test('remux：下载完成后用内置 ffmpeg 无损转封装为 m4a', async (t)
   // MP4 系容器第 4-8 字节是 ftyp
   assert.equal(readFileSync(finalFile).subarray(4, 8).toString(), 'ftyp')
 })
+
+test('自适应调速：分片先失败后恢复时，任务仍能完成', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'mod-hls-'))
+  const total = 6
+  const segments = Array.from({ length: total }, (_, i) => Buffer.alloc(1500 + i, i + 1))
+  const hits = new Map()
+  const base = await startServer(t, (request, response) => {
+    const url = new URL(request.url, 'http://x')
+    if (url.pathname === '/index.m3u8') {
+      response.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' })
+      response.end(
+        [
+          '#EXTM3U',
+          ...segments.map((_, i) => ['#EXTINF:2,', `s${i}.ts`]).flat(),
+          '#EXT-X-ENDLIST'
+        ].join('\n')
+      )
+      return
+    }
+    const index = Number(url.pathname.match(/^\/s(\d+)\.ts$/)?.[1])
+    if (Number.isInteger(index)) {
+      const count = (hits.get(index) || 0) + 1
+      hits.set(index, count)
+      if (count <= 2) {
+        // 模拟弱网截断：声明完整长度却只发一半就断开
+        response.writeHead(200, { 'Content-Length': String(segments[index].length) })
+        response.write(segments[index].subarray(0, 700))
+        setTimeout(() => response.destroy(), 5)
+        return
+      }
+      response.writeHead(200, { 'Content-Length': String(segments[index].length) })
+      response.end(segments[index])
+      return
+    }
+    response.writeHead(404)
+    response.end()
+  })
+
+  // maxRetries 0：跳过请求内快速重试，直接锻炼分片回队+调速机制
+  const driver = createHlsDriver({ maxRetries: 0, errorBackoffBaseMs: 50 })
+  t.after(() => driver.destroy())
+  const gid = await driver.add(
+    { uri: `${base}/index.m3u8`, dir, filename: 'flaky.ts', connectionsLimit: 4 },
+    ''
+  )
+  let status
+  await until(async () => {
+    status = await driver.status(gid)
+    return status.status !== 'active'
+  }, 20000)
+  assert.equal(status.status, 'complete', status.errorMessage)
+  assert.deepEqual(readFileSync(join(dir, 'flaky.ts')), Buffer.concat(segments))
+  // 每个分片都被打过至少 3 次（2 次截断 + 1 次成功）
+  assert.ok([...hits.values()].every((count) => count >= 3))
+})
+
+test('自适应调速：单分片始终失败达到上限后任务报错，其余分片保留', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'mod-hls-'))
+  const total = 4
+  const segments = Array.from({ length: total }, (_, i) => Buffer.alloc(1200, i + 1))
+  const base = await startServer(t, (request, response) => {
+    const url = new URL(request.url, 'http://x')
+    if (url.pathname === '/index.m3u8') {
+      response.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' })
+      response.end(
+        [
+          '#EXTM3U',
+          ...segments.map((_, i) => ['#EXTINF:2,', `s${i}.ts`]).flat(),
+          '#EXT-X-ENDLIST'
+        ].join('\n')
+      )
+      return
+    }
+    const index = Number(url.pathname.match(/^\/s(\d+)\.ts$/)?.[1])
+    if (Number.isInteger(index)) {
+      if (index === 2) {
+        response.writeHead(200, { 'Content-Length': String(segments[index].length) })
+        response.write(segments[index].subarray(0, 100))
+        setTimeout(() => response.destroy(), 5)
+        return
+      }
+      response.writeHead(200)
+      response.end(segments[index])
+      return
+    }
+    response.writeHead(404)
+    response.end()
+  })
+
+  const driver = createHlsDriver({ maxRetries: 0, maxSegmentAttempts: 3, errorBackoffBaseMs: 50 })
+  t.after(() => driver.destroy())
+  const gid = await driver.add(
+    { uri: `${base}/index.m3u8`, dir, filename: 'broken.ts', connectionsLimit: 3 },
+    ''
+  )
+  let status
+  await until(async () => {
+    status = await driver.status(gid)
+    return status.status === 'error'
+  }, 20000)
+  assert.match(status.errorMessage, /分片 3 连续下载失败/)
+  // 好的分片应已落盘，等修好线路后重试可续传
+  const parts = readdirSync(join(dir, '.broken.ts.hls-parts')).filter((name) =>
+    name.endsWith('.part')
+  )
+  assert.equal(parts.length, 3)
+})

@@ -182,6 +182,9 @@ export function createHlsDriver({
   fetchImpl = fetch,
   userAgent = BROWSER_USER_AGENT,
   maxRetries = 3,
+  maxSegmentAttempts = 6,
+  errorBackoffBaseMs = 1000,
+  errorBackoffMaxMs = 8000,
   ffmpegPath = ''
 } = {}) {
   const jobs = new Map()
@@ -431,25 +434,53 @@ export function createHlsDriver({
     }
   }
 
-  // 领取下一个未完成的分片；跳过已完成（含上次运行遗留）的索引
+  // 领取下一个未完成的分片；优先重试此前失败被回队的分片
   function takeSegment(job) {
+    if (job.retries.length) return job.retries.shift()
     while (job.cursor < job.plan.total && job.doneSet.has(job.cursor)) job.cursor++
-    if (job.cursor >= job.plan.total) return -1
-    return job.cursor++
+    return job.cursor < job.plan.total ? job.cursor++ : -1
+  }
+
+  // 线路不稳（连接中断、字节不完整等）时降并发；连续成功后逐级恢复。
+  // 重试等待按“分片自身第几次失败”指数增长，分片之间互不拖累
+  function throttleDown(job) {
+    job.successStreak = 0
+    job.currentLimit = Math.max(1, Math.floor(job.currentLimit / 2))
+  }
+
+  function throttleRecover(job) {
+    if (job.currentLimit >= job.baseLimit) return
+    if (job.successStreak < job.currentLimit * 6) return
+    job.currentLimit = Math.min(job.baseLimit, job.currentLimit * 2)
+    job.successStreak = 0
   }
 
   async function worker(job) {
     job.activeWorkers++
     try {
       while (job.status === 'active' && !job.controller.signal.aborted) {
+        // 已被降速时，多出来的 worker 主动退出
+        if (job.activeWorkers > job.currentLimit) break
         const index = takeSegment(job)
         if (index < 0) break
         try {
           await downloadSegment(job, index)
+          job.successStreak++
+          throttleRecover(job)
         } catch (error) {
-          // 出错时标记状态，让其余 worker 停止领取新分片
-          if (job.status === 'active' && error.name !== 'AbortError') job.status = 'error'
-          throw error
+          if (error.name === 'AbortError') throw error
+          job.attempts[index] = (job.attempts[index] || 0) + 1
+          if (job.attempts[index] >= job.maxSegmentAttempts) {
+            job.status = 'error'
+            job.errorMessage = `分片 ${index + 1} 连续下载失败：${error.message}`
+            throw error
+          }
+          throttleDown(job)
+          job.retries.push(index)
+          await abortableSleep(
+            Math.min(errorBackoffMaxMs, errorBackoffBaseMs * 2 ** (job.attempts[index] - 1)),
+            job.controller.signal
+          )
         }
       }
     } finally {
@@ -470,13 +501,23 @@ export function createHlsDriver({
   async function execute(job) {
     try {
       if (!job.plan) await preparePlan(job)
-      const concurrency = Math.min(16, Math.max(1, Math.floor(job.task.connectionsLimit) || 8))
-      // 上次运行可能在中止的分片处留下游标空档，从头扫起
-      job.cursor = 0
-      const workers = Array.from({
-        length: Math.max(1, Math.min(concurrency, job.plan.total - job.done))
-      })
-      await Promise.all(workers.map(() => worker(job)))
+      job.baseLimit = Math.min(16, Math.max(1, Math.floor(job.task.connectionsLimit) || 8))
+      job.currentLimit = job.currentLimit || job.baseLimit
+      // worker 失败后会把分片回队；轮次循环保证回队的分片被重新领走
+      for (let round = 0; round < 100; round++) {
+        if (job.status !== 'active' || job.controller.signal.aborted) return
+        if (job.done >= job.plan.total) break
+        job.cursor = 0
+        const count = Math.max(
+          1,
+          Math.min(job.currentLimit, job.plan.total - job.done + job.retries.length)
+        )
+        await Promise.all(Array.from({ length: count }, () => worker(job)))
+        if (job.done >= job.plan.total) break
+        if (job.status !== 'active' || job.controller.signal.aborted) return
+        // 有分片仍差着：歇一口气再开下一轮
+        await abortableSleep(errorBackoffBaseMs, job.controller.signal)
+      }
       if (job.status !== 'active' || job.controller.signal.aborted) return
       if (job.done >= job.plan.total) {
         job.totalEstimate = Math.max(job.totalEstimate, job.completedBytes)
@@ -491,7 +532,8 @@ export function createHlsDriver({
     } catch (error) {
       if (job.status !== 'paused' && error.name !== 'AbortError') {
         job.status = 'error'
-        job.errorMessage = error.message || '下载失败'
+        // worker 内部已写过更具体的原因（如分片失败次数达上限）时不要覆盖
+        job.errorMessage ||= error.message || '下载失败'
       }
     }
   }
@@ -550,6 +592,12 @@ export function createHlsDriver({
         doneSet: new Set(),
         done: 0,
         cursor: 0,
+        retries: [],
+        attempts: {},
+        baseLimit: 0,
+        currentLimit: 0,
+        successStreak: 0,
+        maxSegmentAttempts,
         completedBytes: 0,
         totalEstimate: 0,
         speed: 0,

@@ -25,6 +25,12 @@ export function chromiumFetch(url, { headers = {}, signal } = {}) {
       }
       signal.addEventListener('abort', onAbort, { once: true })
     }
+    const fail = (error) => {
+      if (settled) return
+      settled = true
+      if (signal) signal.removeEventListener('abort', onAbort)
+      reject(error)
+    }
     request.on('response', (response) => {
       response.on('data', (chunk) => chunks.push(Buffer.from(chunk)))
       response.on('end', () => {
@@ -41,13 +47,12 @@ export function chromiumFetch(url, { headers = {}, signal } = {}) {
           text: async () => body.toString('utf8')
         })
       })
+      // 传输层错误（如 ERR_CONTENT_LENGTH_MISMATCH）从 response 上抛出；
+      // 不挂处理器会让 error 事件炸穿主进程
+      response.on('error', fail)
+      response.on('aborted', () => fail(new Error('连接中断，数据不完整')))
     })
-    request.on('error', (error) => {
-      if (settled) return
-      settled = true
-      if (signal) signal.removeEventListener('abort', onAbort)
-      reject(error)
-    })
+    request.on('error', fail)
     request.end()
   })
 }
