@@ -1,6 +1,6 @@
 import { randomUUID, createDecipheriv } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { createWriteStream, existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
+import { appendFileSync, createWriteStream, existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { once } from 'node:events'
 import { readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -185,16 +185,35 @@ export function createHlsDriver({
   maxSegmentAttempts = 6,
   errorBackoffBaseMs = 1000,
   errorBackoffMaxMs = 8000,
-  ffmpegPath = ''
+  ffmpegPath = '',
+  debugLogPath = ''
 } = {}) {
   const jobs = new Map()
+
+  // 诊断日志：分片成败、调速变化全记录，排查"卡住不动"类问题用
+  let logSize = 0
+  const log = (message) => {
+    const line = `${new Date().toISOString()} ${message}\n`
+    if (debugLogPath) {
+      try {
+        if (logSize > 5 * 1024 * 1024) {
+          rmSync(debugLogPath, { force: true })
+          logSize = 0
+        }
+        appendFileSync(debugLogPath, line, 'utf8')
+        logSize += line.length
+      } catch {
+        /* 日志失败不影响下载 */
+      }
+    }
+  }
 
   function partPath(job, index) {
     return join(job.partsDir, `${pad(index)}.part`)
   }
 
   async function request(job, url, range) {
-    const headers = { 'User-Agent': userAgent }
+    const headers = { 'User-Agent': userAgent, Connection: 'close' }
     if (job.cookie) headers.Cookie = job.cookie
     if (range) headers.Range = `bytes=${range.offset}-${range.offset + range.length - 1}`
     let lastError
@@ -339,6 +358,7 @@ export function createHlsDriver({
 
   async function downloadSegment(job, index) {
     const segment = job.plan.segments[index]
+    const startedAt = Date.now()
     let buffer = Buffer.from(await (await request(job, segment.url, segment.range)).arrayBuffer())
     if (segment.key) {
       const key = await loadKey(job, segment.key.url)
@@ -352,6 +372,7 @@ export function createHlsDriver({
     job.done++
     job.completedBytes += buffer.length
     refreshEstimate(job)
+    log(`${job.gid} 分片${index} 完成 (${Date.now() - startedAt}ms, ${buffer.length}字节)`)
   }
 
   async function merge(job) {
@@ -444,8 +465,11 @@ export function createHlsDriver({
   // 线路不稳（连接中断、字节不完整等）时降并发；连续成功后逐级恢复。
   // 重试等待按“分片自身第几次失败”指数增长，分片之间互不拖累
   function throttleDown(job) {
-    job.successStreak = 0
+    // 成功率计数减半而非清零：间歇性抽风不该让并发永远爬不回去
+    job.successStreak = Math.floor(job.successStreak / 2)
+    const before = job.currentLimit
     job.currentLimit = Math.max(1, Math.floor(job.currentLimit / 2))
+    log(`${job.gid} 降速 ${before}->${job.currentLimit}`)
   }
 
   function throttleRecover(job) {
@@ -453,6 +477,7 @@ export function createHlsDriver({
     if (job.successStreak < job.currentLimit * 6) return
     job.currentLimit = Math.min(job.baseLimit, job.currentLimit * 2)
     job.successStreak = 0
+    log(`${job.gid} 升速 -> ${job.currentLimit}`)
   }
 
   async function worker(job) {
@@ -470,9 +495,11 @@ export function createHlsDriver({
         } catch (error) {
           if (error.name === 'AbortError') throw error
           job.attempts[index] = (job.attempts[index] || 0) + 1
+          log(`${job.gid} 分片${index} 第${job.attempts[index]}次失败: ${error.message}`)
           if (job.attempts[index] >= job.maxSegmentAttempts) {
             job.status = 'error'
             job.errorMessage = `分片 ${index + 1} 连续下载失败：${error.message}`
+            log(`${job.gid} 任务失败: ${job.errorMessage}`)
             throw error
           }
           throttleDown(job)
@@ -512,6 +539,9 @@ export function createHlsDriver({
           1,
           Math.min(job.currentLimit, job.plan.total - job.done + job.retries.length)
         )
+        log(
+          `${job.gid} 第${round}轮 workers=${count} 剩余${job.plan.total - job.done} 回队${job.retries.length}`
+        )
         await Promise.all(Array.from({ length: count }, () => worker(job)))
         if (job.done >= job.plan.total) break
         if (job.status !== 'active' || job.controller.signal.aborted) return
@@ -521,9 +551,11 @@ export function createHlsDriver({
       if (job.status !== 'active' || job.controller.signal.aborted) return
       if (job.done >= job.plan.total) {
         job.totalEstimate = Math.max(job.totalEstimate, job.completedBytes)
+        log(`${job.gid} 全部分片完成，开始合并 ${job.finalPath}`)
         await merge(job)
         await remux(job)
         job.status = 'complete'
+        log(`${job.gid} 任务完成 -> ${job.finalPath}`)
       } else {
         // 有分片始终没下下来（不应发生），避免任务卡在 active
         job.status = 'error'
@@ -627,6 +659,13 @@ export function createHlsDriver({
       job.status = 'active'
       job.errorMessage = ''
       job.lastSample = { time: 0, bytes: 0 }
+      // 手动继续视为新开始：宽恕失败历史，恢复满编并发
+      job.attempts = {}
+      job.currentLimit = 0
+      log(`${job.gid} 手动继续，重置调速`)
+      // 旧一轮的 worker 最多再等一个退避周期；等它退出后再满编重启，
+      // 否则 start 会被"已在运行"挡掉，任务只剩旧轮次的残兵
+      if (job.running) await job.runPromise.catch(() => {})
       void start(job)
     },
     async remove(gid) {

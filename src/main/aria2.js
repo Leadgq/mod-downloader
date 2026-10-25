@@ -22,7 +22,8 @@ export function createAria2Service({ getWindow }) {
       aria2: createAria2Driver({ exe }),
       hls: createHlsDriver({
         fetchImpl: chromiumFetch,
-        ffmpegPath: existsSync(ffmpegPath) ? ffmpegPath : ''
+        ffmpegPath: existsSync(ffmpegPath) ? ffmpegPath : '',
+        debugLogPath: join(app.getPath('userData'), 'hls-debug.log')
       })
     }),
     historyPath: join(app.getPath('userData'), 'download-history.json'),
