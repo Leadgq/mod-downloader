@@ -165,6 +165,10 @@ function sanitizeName(name) {
     .replace(/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i, '_$&')
 }
 
+// 文件名主体上限：给扩展名、分片目录后缀和保存路径留足余量，
+// Windows 默认整路径 260 字符，超长会直接写入失败
+const MAX_NAME_BASE = 72
+
 function targetName(task, playlistUrl, ext) {
   const provided = String(task.filename || '').trim()
   if (provided) return /\.[a-z0-9]{1,5}$/i.test(provided) ? provided : `${provided}${ext}`
@@ -175,6 +179,11 @@ function targetName(task, playlistUrl, ext) {
     base = ''
   }
   base = sanitizeName(base.replace(/\.m3u8?$/i, ''))
+  // 按码点截断（避免劈开代理对），哈希尾巴防止不同长名截断后撞车
+  if (base.length > MAX_NAME_BASE) {
+    const chars = [...base]
+    base = `${chars.slice(0, MAX_NAME_BASE - 7).join('').trimEnd()}~${randomUUID().slice(0, 6)}`
+  }
   return `${base || 'hls-download'}${ext}`
 }
 

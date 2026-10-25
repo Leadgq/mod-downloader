@@ -156,6 +156,13 @@
                 v-if="!isHistory(task)"
                 size="small"
                 :disabled="pending.has(task.id)"
+                @click="openTarget(task, 'dir')"
+                >打开文件夹</el-button
+              >
+              <el-button
+                v-if="!isHistory(task)"
+                size="small"
+                :disabled="pending.has(task.id)"
                 @click="operate('cancel', task)"
                 >取消</el-button
               >

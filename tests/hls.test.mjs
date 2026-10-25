@@ -579,3 +579,47 @@ test('自适应调速：单分片始终失败达到上限后任务报错，其�
   )
   assert.equal(parts.length, 3)
 })
+
+test('超长文件名自动截断，Windows 可正常落盘', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'mod-hls-'))
+  const longName = '极长'.repeat(120) + '.m3u8'
+  const media = Buffer.alloc(800, 9)
+  const base = await startServer(t, (request, response) => {
+    const url = new URL(request.url, 'http://x')
+    if (decodeURIComponent(url.pathname) === `/${longName}`) {
+      response.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' })
+      response.end('#EXTM3U\n#EXTINF:2,\nseg0.ts\n#EXT-X-ENDLIST')
+      return
+    }
+    if (url.pathname === '/seg0.ts') {
+      response.writeHead(200)
+      response.end(media)
+      return
+    }
+    response.writeHead(404)
+    response.end()
+  })
+
+  const driver = createHlsDriver()
+  t.after(() => driver.destroy())
+  const gid = await driver.add(
+    {
+      uri: `${base}/${encodeURIComponent(longName)}?sign=x`,
+      dir,
+      filename: '',
+      connectionsLimit: 1
+    },
+    ''
+  )
+  let status
+  await until(async () => {
+    status = await driver.status(gid)
+    return status.status !== 'active'
+  }, 15000)
+  assert.equal(status.status, 'complete', status.errorMessage)
+  const finalFile = status.files[0].path
+  const name = finalFile.split(/[\\/]/).pop()
+  assert.ok(name.length <= 75, `文件名应被截断，实际 ${name.length} 字符: ${name}`)
+  assert.match(name, /~[0-9a-f]{6}\.ts$/)
+  assert.ok(existsSync(finalFile))
+})
