@@ -35,6 +35,29 @@ function createWindow() {
     mainWindow = null
   })
 
+  // 下载进行中时确认退出；空闲时直接退出。quitting=true 表示已过确认环节
+  mainWindow.on('close', (event) => {
+    if (quitting || !aria2) return
+    const busy = aria2.list().tasks.some((task) => ['active', 'waiting'].includes(task.status))
+    if (!busy) return
+    event.preventDefault()
+    void dialog
+      .showMessageBox(mainWindow, {
+        type: 'warning',
+        title: 'Nox Downloader',
+        message: '有任务正在下载',
+        detail: '退出会中断当前下载。已完成的部分会保留，下次启动后可继续。',
+        buttons: ['继续下载', '退出程序'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true
+      })
+      .then(({ response }) => {
+        // 走 before-quit 的优雅关闭路径（停引擎、存进度）
+        if (response === 1) app.quit()
+      })
+  })
+
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
