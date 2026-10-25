@@ -1,5 +1,5 @@
 appId: com.moddownloader.app
-productName: mod-downloader
+productName: Nox Downloader
 directories:
   buildResources: build
 files:
@@ -15,11 +15,11 @@ extraResources:
     to: bin
 win:
   icon: build/deepblack-download.ico
-  executableName: mod-downloader
+  executableName: nox-downloader
 nsis:
   installerIcon: build/deepblack-download.ico
   uninstallerIcon: build/deepblack-download.ico
-  artifactName: ${name}-${version}-setup.${ext}
+  artifactName: nox-downloader-${version}-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always

@@ -3,7 +3,7 @@
     <header class="page-header">
       <div>
         <p class="eyebrow">YOUR FILES, IN FLOW</p>
-        <h1>深黑下载器<span class="title-dot">.</span></h1>
+        <h1>Nox Downloader<span class="title-dot">.</span></h1>
         <p class="subtitle">添加链接，剩下的交给下载队列。</p>
       </div>
       <el-button type="primary" size="large" :icon="Plus" :disabled="loading" @click="openNew">

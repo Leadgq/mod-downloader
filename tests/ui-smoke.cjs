@@ -126,6 +126,10 @@ app.whenReady().then(async () => {
       run(
         `(() => { const button = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === ${JSON.stringify(label)}); if (!button) throw Error('Button missing'); button.click() })()`
       )
+    // 首次启动落在欢迎页，点击开始使用后进入主界面
+    await waitFor("document.body.textContent.includes('开始使用')")
+    await run("document.querySelector('.start-button').click()")
+    await waitFor("document.body.textContent.includes('Nox Downloader')")
     await waitFor("document.querySelectorAll('.task-card').length === 5")
     await run('document.fonts.ready.then(() => true)')
     writeFileSync(join(output, 'downloads.png'), (await window.webContents.capturePage()).toPNG())

@@ -7,7 +7,8 @@ export const useConfigStore = defineStore('config', {
     dir: '',
     filename: '',
     connections: 8,
-    cookie: ''
+    cookie: '',
+    welcomed: false
   }),
   persist: {
     enabled: true,

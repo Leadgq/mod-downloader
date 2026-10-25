@@ -5,6 +5,10 @@ import icon from '../../resources/deepblack-download.png?asset'
 import { createMenu } from './menu'
 import { createAria2Service } from './aria2'
 
+// 产品显示名改为 Nox Downloader 后，锁定数据目录名仍为 mod-downloader，
+// 老用户的下载历史（%APPDATA%\mod-downloader）才能延续
+app.setName('mod-downloader')
+
 let mainWindow = null
 let aria2
 
