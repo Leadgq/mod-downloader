@@ -528,6 +528,69 @@ test('自适应调速：分片先失败后恢复时，任务仍能完成', async
   assert.ok([...hits.values()].every((count) => count >= 3))
 })
 
+test('自适应调速：降到 1 后，实际下载并发逐级恢复到设定上限', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'mod-hls-'))
+  const limit = 8
+  const segments = Array.from({ length: 96 }, (_, i) => Buffer.alloc(100 + i, i))
+  const hits = new Map()
+  const successful = new Map()
+  const samples = []
+  let activeRequests = 0
+  let completed = 0
+  const driver = createHlsDriver({
+    maxRetries: 0,
+    errorBackoffBaseMs: 5,
+    fetchImpl: async (url) => {
+      if (url.endsWith('.m3u8')) {
+        return new Response(
+          [
+            '#EXTM3U',
+            ...segments.flatMap((_, i) => ['#EXTINF:2,', `s${i}.ts`]),
+            '#EXT-X-ENDLIST'
+          ].join('\n')
+        )
+      }
+      const index = Number(new URL(url).pathname.match(/s(\d+)\.ts$/)[1])
+      const count = (hits.get(index) || 0) + 1
+      hits.set(index, count)
+      // 首批请求同时失败，把并发从 8 压到 1；之后线路保持正常。
+      if (index < limit && count === 1) throw new Error('高峰期连接中断')
+      activeRequests++
+      samples.push({ completed, activeRequests })
+      try {
+        await sleep(10)
+        completed++
+        successful.set(index, (successful.get(index) || 0) + 1)
+        return new Response(segments[index])
+      } finally {
+        activeRequests--
+      }
+    }
+  })
+  t.after(() => driver.destroy())
+  const gid = await driver.add({
+    uri: 'https://example.test/index.m3u8',
+    dir,
+    filename: 'recover.ts',
+    connectionsLimit: limit
+  })
+  await until(() => driver.status(gid).status !== 'active')
+  const status = driver.status(gid)
+  assert.equal(status.status, 'complete', status.errorMessage)
+  assert.equal(samples.find((sample) => sample.completed === 0).activeRequests, 1)
+  assert.equal(
+    Math.max(...samples.map((sample) => sample.activeRequests)),
+    limit,
+    '线路恢复后必须补充实际下载 worker，不能只修改允许并发数'
+  )
+  assert.equal(successful.size, segments.length)
+  assert.ok(
+    [...successful.values()].every((count) => count === 1),
+    '每个分片只能成功下载一次'
+  )
+  assert.deepEqual(readFileSync(join(dir, 'recover.ts')), Buffer.concat(segments))
+})
+
 test('自适应调速：单分片始终失败达到上限后任务报错，其余分片保留', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'mod-hls-'))
   const total = 4

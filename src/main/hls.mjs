@@ -182,7 +182,10 @@ function targetName(task, playlistUrl, ext) {
   // 按码点截断（避免劈开代理对），哈希尾巴防止不同长名截断后撞车
   if (base.length > MAX_NAME_BASE) {
     const chars = [...base]
-    base = `${chars.slice(0, MAX_NAME_BASE - 7).join('').trimEnd()}~${randomUUID().slice(0, 6)}`
+    base = `${chars
+      .slice(0, MAX_NAME_BASE - 7)
+      .join('')
+      .trimEnd()}~${randomUUID().slice(0, 6)}`
   }
   return `${base || 'hls-download'}${ext}`
 }
@@ -501,6 +504,8 @@ export function createHlsDriver({
           await downloadSegment(job, index)
           job.successStreak++
           throttleRecover(job)
+          // 升速后交回调度器补齐 worker，否则允许并发升了，实际仍只有旧 worker。
+          if (job.activeWorkers < job.currentLimit) break
         } catch (error) {
           if (error.name === 'AbortError') throw error
           job.attempts[index] = (job.attempts[index] || 0) + 1
@@ -524,6 +529,27 @@ export function createHlsDriver({
     }
   }
 
+  async function downloadSegments(job) {
+    const workers = new Set()
+    try {
+      while (job.status === 'active' && !job.controller.signal.aborted) {
+        while (
+          job.activeWorkers < job.currentLimit &&
+          (job.retries.length > 0 || job.cursor < job.plan.total)
+        ) {
+          const promise = worker(job).finally(() => workers.delete(promise))
+          workers.add(promise)
+        }
+        if (!workers.size) break
+        // worker 退出（降速、升速或队列暂空）后，按最新上限补齐。
+        await Promise.race(workers)
+      }
+    } finally {
+      // 暂停/失败时等待所有 worker 退出，避免旧 worker 混入继续后的下载。
+      await Promise.allSettled(workers)
+    }
+  }
+
   function start(job) {
     if (job.running) return null
     job.running = true
@@ -539,24 +565,7 @@ export function createHlsDriver({
       if (!job.plan) await preparePlan(job)
       job.baseLimit = Math.min(16, Math.max(1, Math.floor(job.task.connectionsLimit) || 8))
       job.currentLimit = job.currentLimit || job.baseLimit
-      // worker 失败后会把分片回队；轮次循环保证回队的分片被重新领走
-      for (let round = 0; round < 100; round++) {
-        if (job.status !== 'active' || job.controller.signal.aborted) return
-        if (job.done >= job.plan.total) break
-        job.cursor = 0
-        const count = Math.max(
-          1,
-          Math.min(job.currentLimit, job.plan.total - job.done + job.retries.length)
-        )
-        log(
-          `${job.gid} 第${round}轮 workers=${count} 剩余${job.plan.total - job.done} 回队${job.retries.length}`
-        )
-        await Promise.all(Array.from({ length: count }, () => worker(job)))
-        if (job.done >= job.plan.total) break
-        if (job.status !== 'active' || job.controller.signal.aborted) return
-        // 有分片仍差着：歇一口气再开下一轮
-        await abortableSleep(errorBackoffBaseMs, job.controller.signal)
-      }
+      await downloadSegments(job)
       if (job.status !== 'active' || job.controller.signal.aborted) return
       if (job.done >= job.plan.total) {
         job.totalEstimate = Math.max(job.totalEstimate, job.completedBytes)
