@@ -29,8 +29,8 @@ app.whenReady().then(async () => {
     response.end()
   })
   try {
-    const { chromiumFetch } = await import('../src/main/chromium-fetch.mjs')
-    const { createHlsDriver } = await import('../src/main/hls.mjs')
+    const { chromiumFetch } = await import('../../src/main/hls/chromium-fetch.mjs')
+    const { createHlsDriver } = await import('../../src/main/hls/index.mjs')
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
     const base = `http://127.0.0.1:${server.address().port}`
     const response = await chromiumFetch(`${base}/start.m3u8`)

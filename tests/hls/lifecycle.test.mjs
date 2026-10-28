@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events'
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createHlsDriver } from '../src/main/hls.mjs'
+import { createHlsDriver } from '../../src/main/hls/index.mjs'
 
 async function until(check) {
   for (let i = 0; i < 500; i++) {

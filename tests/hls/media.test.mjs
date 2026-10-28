@@ -5,10 +5,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createHlsDriver } from '../src/main/hls.mjs'
+import { createHlsDriver } from '../../src/main/hls/index.mjs'
 
-const ffmpeg = fileURLToPath(new URL('../resources/bin/win32/ffmpeg.exe', import.meta.url))
-const ffprobe = fileURLToPath(new URL('../resources/bin/win32/ffprobe.exe', import.meta.url))
+const ffmpeg = fileURLToPath(new URL('../../resources/bin/win32/ffmpeg.exe', import.meta.url))
+const ffprobe = fileURLToPath(new URL('../../resources/bin/win32/ffprobe.exe', import.meta.url))
 const skip = !existsSync(ffmpeg) || !existsSync(ffprobe)
 let fixtures
 function command(exe, args, cwd) {

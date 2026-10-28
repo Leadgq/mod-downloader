@@ -3,9 +3,9 @@ import { join } from 'path'
 import { existsSync } from 'fs'
 import { createAria2Driver } from './aria2-driver.mjs'
 import { createTaskManager } from './task-manager.mjs'
-import { createHlsDriver } from './hls.mjs'
+import { createHlsDriver } from './hls/index.mjs'
 import { createCompositeDriver } from './driver.mjs'
-import { chromiumFetch } from './chromium-fetch.mjs'
+import { chromiumFetch } from './hls/chromium-fetch.mjs'
 
 export function createAria2Service({ getWindow }) {
   const binary = process.platform === 'win32' ? 'aria2c.exe' : 'aria2c'

@@ -5,7 +5,7 @@ import { createServer } from 'node:http'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createHlsDriver, isHlsUri, parseM3u8, resolveSource } from '../src/main/hls.mjs'
+import { createHlsDriver, isHlsUri, parseM3u8, resolveSource } from '../../src/main/hls/index.mjs'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 async function until(check, timeoutMs = 10000) {
@@ -352,7 +352,7 @@ test('删除任务与销毁不再产生新请求', async (t) => {
 })
 
 test('与任务管理器集成：m3u8 任务走完整的添加、轮询、暂停、继续、完成流程', async (t) => {
-  const { createTaskManager } = await import('../src/main/task-manager.mjs')
+  const { createTaskManager } = await import('../../src/main/task-manager.mjs')
   const dir = mkdtempSync(join(tmpdir(), 'mod-hls-'))
   const total = 10
   const segments = Array.from({ length: total }, (_, i) => Buffer.alloc(1500, i + 1))
@@ -415,7 +415,7 @@ test('与任务管理器集成：m3u8 任务走完整的添加、轮询、暂停
 test('remux：下载完成后用内置 ffmpeg 无损转封装为 m4a', async (t) => {
   const { spawnSync } = await import('node:child_process')
   const { fileURLToPath } = await import('node:url')
-  const ffmpegPath = fileURLToPath(new URL('../resources/bin/win32/ffmpeg.exe', import.meta.url))
+  const ffmpegPath = fileURLToPath(new URL('../../resources/bin/win32/ffmpeg.exe', import.meta.url))
   if (!existsSync(ffmpegPath)) return t.skip('本机未放置 ffmpeg.exe，跳过转封装测试')
 
   // 用 ffmpeg 生成 1 秒真实 AAC 音频的 TS 分片

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter, getEventListeners } from 'node:events'
-import { createChromiumFetch } from '../src/main/chromium-request.mjs'
+import { createChromiumFetch } from '../../src/main/hls/chromium-request.mjs'
 
 function mockNet(mode) {
   const request = new EventEmitter()

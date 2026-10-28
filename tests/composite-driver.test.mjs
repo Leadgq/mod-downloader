@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createCompositeDriver } from '../src/main/driver.mjs'
-import { createHlsDriver } from '../src/main/hls.mjs'
+import { createHlsDriver } from '../src/main/hls/index.mjs'
 import { createTaskManager } from '../src/main/task-manager.mjs'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))

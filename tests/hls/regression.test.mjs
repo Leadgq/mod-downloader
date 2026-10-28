@@ -4,7 +4,7 @@ import { createCipheriv } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createHlsDriver, parseM3u8 } from '../src/main/hls.mjs'
+import { createHlsDriver, parseM3u8 } from '../../src/main/hls/index.mjs'
 import HLS from 'hls-parser'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))

@@ -1,4 +1,4 @@
-import { isHlsUri } from './hls.mjs'
+import { isHlsUri } from './hls/index.mjs'
 
 // 组合驱动：普通文件交给 aria2，m3u8 流媒体交给内置 HLS 下载器。
 // 两边保持同一套接口（add/status/pause/resume/remove），task-manager 无需区分。

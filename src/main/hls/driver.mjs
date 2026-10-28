@@ -5,10 +5,8 @@ import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { link, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { parseM3u8 } from './hls-playlist.mjs'
-import { digest, openStorage, resourceIdentity } from './hls-storage.mjs'
-
-export { parseM3u8 } from './hls-playlist.mjs'
+import { parseM3u8 } from './playlist.mjs'
+import { digest, openStorage, resourceIdentity } from './storage.mjs'
 
 const BROWSER_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'
