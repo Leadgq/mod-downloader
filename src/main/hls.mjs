@@ -1,9 +1,14 @@
 import { randomUUID, createDecipheriv } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { appendFileSync, createWriteStream, existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
-import { once } from 'node:events'
-import { readFile, rename, writeFile } from 'node:fs/promises'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import { link, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { parseM3u8 } from './hls-playlist.mjs'
+import { digest, openStorage, resourceIdentity } from './hls-storage.mjs'
+
+export { parseM3u8 } from './hls-playlist.mjs'
 
 const BROWSER_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'
@@ -15,89 +20,6 @@ export function isHlsUri(uri) {
     return new URL(uri).pathname.toLowerCase().endsWith('.m3u8')
   } catch {
     return false
-  }
-}
-
-function parseAttributes(input) {
-  const attrs = {}
-  const pattern = /([A-Z0-9-]+)=("[^"]*"|[^,]*)/g
-  let match
-  while ((match = pattern.exec(input))) {
-    const raw = match[2]
-    attrs[match[1]] = raw.startsWith('"') ? raw.slice(1, -1) : raw
-  }
-  return attrs
-}
-
-function parseRangeValue(value, lastEnd) {
-  if (!value) return null
-  const [length, offset] = value.split('@')
-  const start =
-    offset === undefined || offset === '' ? (lastEnd >= 0 ? lastEnd + 1 : 0) : Number(offset)
-  return { offset: start, length: Number(length) }
-}
-
-export function parseM3u8(text) {
-  const lines = text
-    .replace(/^\uFEFF/, '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-  const variants = []
-  const segments = []
-  let mediaSequence = 0
-  let live = true
-  let key = null
-  let map = null
-  let pendingDuration = 0
-  let pendingRange = null
-  let pendingVariant = null
-  let lastRangeEnd = -1
-  for (const line of lines) {
-    if (!line) continue
-    if (!line.startsWith('#')) {
-      if (pendingVariant) {
-        pendingVariant.uri = line
-        pendingVariant = null
-      } else {
-        const byteRange = pendingRange
-        if (byteRange) lastRangeEnd = byteRange.offset + byteRange.length - 1
-        segments.push({ uri: line, duration: pendingDuration, byteRange, key, map })
-      }
-      pendingDuration = 0
-      pendingRange = null
-      continue
-    }
-    const colon = line.indexOf(':')
-    const tag = colon === -1 ? line : line.slice(0, colon)
-    const value = colon === -1 ? '' : line.slice(colon + 1)
-    if (tag === '#EXT-X-STREAM-INF') {
-      const attrs = parseAttributes(value)
-      const variant = { uri: '', bandwidth: Number(attrs.BANDWIDTH) || 0, attrs }
-      variants.push(variant)
-      pendingVariant = variant
-    } else if (tag === '#EXTINF') {
-      pendingDuration = parseFloat(value) || 0
-    } else if (tag === '#EXT-X-BYTERANGE') {
-      pendingRange = parseRangeValue(value, lastRangeEnd)
-    } else if (tag === '#EXT-X-KEY') {
-      const attrs = parseAttributes(value)
-      key = attrs.METHOD && attrs.METHOD !== 'NONE' ? { ...attrs } : null
-    } else if (tag === '#EXT-X-MAP') {
-      const attrs = parseAttributes(value)
-      map = attrs.URI ? { uri: attrs.URI, byteRange: attrs.BYTERANGE || null } : map
-    } else if (tag === '#EXT-X-MEDIA-SEQUENCE') {
-      mediaSequence = Number(value) || 0
-    } else if (tag === '#EXT-X-ENDLIST') {
-      live = false
-    }
-  }
-  return {
-    isMaster: variants.length > 0,
-    variants,
-    segments,
-    mediaSequence,
-    live,
-    map: segments[0]?.map || null
   }
 }
 
@@ -146,14 +68,7 @@ function aesDecrypt(buffer, key, iv) {
     const decipher = createDecipheriv('aes-128-cbc', key, iv)
     return Buffer.concat([decipher.update(buffer), decipher.final()])
   } catch {
-    // 少数打包器不分段填充 PKCS7，回退为去掉自动去填充直接解密
-    const decipher = createDecipheriv('aes-128-cbc', key, iv)
-    decipher.setAutoPadding(false)
-    try {
-      return Buffer.concat([decipher.update(buffer), decipher.final()])
-    } catch {
-      throw new Error('分片解密失败（数据长度异常）')
-    }
+    throw new Error('分片解密失败（密钥、IV 或加密数据不正确）')
   }
 }
 
@@ -185,18 +100,20 @@ function targetName(task, playlistUrl, ext) {
     base = `${chars
       .slice(0, MAX_NAME_BASE - 7)
       .join('')
-      .trimEnd()}~${randomUUID().slice(0, 6)}`
+      .trimEnd()}~${digest(base).slice(0, 6)}`
   }
   return `${base || 'hls-download'}${ext}`
 }
 
 export function createHlsDriver({
   fetchImpl = fetch,
+  spawnImpl = spawn,
   userAgent = BROWSER_USER_AGENT,
   maxRetries = 3,
   maxSegmentAttempts = 6,
   errorBackoffBaseMs = 1000,
   errorBackoffMaxMs = 8000,
+  ffmpegTimeoutMs = 10 * 60 * 1000,
   ffmpegPath = '',
   debugLogPath = ''
 } = {}) {
@@ -220,20 +137,21 @@ export function createHlsDriver({
     }
   }
 
-  function partPath(job, index) {
-    return join(job.partsDir, `${pad(index)}.part`)
-  }
-
   async function request(job, url, range) {
-    const headers = { 'User-Agent': userAgent, Connection: 'close' }
+    const headers = { 'User-Agent': userAgent, Connection: 'close', 'Accept-Encoding': 'identity' }
     if (job.cookie) headers.Cookie = job.cookie
     if (range) headers.Range = `bytes=${range.offset}-${range.offset + range.length - 1}`
     let lastError
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
+        let reportedProgress = false
         const response = await fetchImpl(url, {
           headers,
           signal: job.controller.signal,
+          onProgress: (bytes) => {
+            reportedProgress = true
+            job.transferredBytes += bytes
+          },
           redirect: 'follow'
         })
         if (!response.ok) {
@@ -242,7 +160,34 @@ export function createHlsDriver({
           error.fatal = [401, 403, 404, 410].includes(response.status)
           throw error
         }
-        return response
+        const buffer = Buffer.from(await response.arrayBuffer())
+        job.controller.signal.throwIfAborted()
+        const length = response.headers?.get('content-length')
+        const encoding = response.headers?.get('content-encoding')
+        if (length !== null && length !== undefined && (!encoding || encoding === 'identity')) {
+          if (!/^\d+$/.test(length) || Number(length) !== buffer.length) {
+            throw new Error('响应长度与 Content-Length 不一致')
+          }
+        }
+        if (!buffer.length) throw new Error('服务器返回了空内容')
+        if (range) {
+          const contentRange = response.headers?.get('content-range') || ''
+          const match = /^bytes (\d+)-(\d+)\/(\d+|\*)$/i.exec(contentRange)
+          const end = range.offset + range.length - 1
+          if (
+            response.status !== 206 ||
+            !match ||
+            Number(match[1]) !== range.offset ||
+            Number(match[2]) !== end ||
+            (match[3] !== '*' && Number(match[3]) <= end) ||
+            buffer.length !== range.length
+          )
+            throw new Error('服务器未正确返回请求的字节范围（需要匹配的 206 / Content-Range）')
+        } else if (response.status === 206) {
+          throw new Error('服务器意外返回了不完整的范围响应')
+        }
+        if (!reportedProgress) job.transferredBytes += buffer.length
+        return { buffer, url: response.url || url }
       } catch (error) {
         if (error.name === 'AbortError') throw error
         lastError = error
@@ -255,7 +200,7 @@ export function createHlsDriver({
 
   async function fetchPlaylist(job, url) {
     const response = await request(job, url)
-    const text = await response.text()
+    const text = response.buffer.toString('utf8')
     const trimmed = text.replace(/^\uFEFF/, '').trimStart()
     if (!trimmed.startsWith('#EXTM3U')) {
       if (trimmed.startsWith('<') || /<html|<!doctype/i.test(trimmed.slice(0, 200)))
@@ -267,97 +212,158 @@ export function createHlsDriver({
     return { text, url: response.url || url }
   }
 
-  async function loadKey(job, keyUrl) {
-    if (job.keys.has(keyUrl)) return job.keys.get(keyUrl)
-    const response = await request(job, keyUrl)
-    const key = Buffer.from(await response.arrayBuffer())
-    if (key.length !== 16) throw new Error(`密钥长度异常（${key.length} 字节）`)
-    job.keys.set(keyUrl, key)
-    return key
+  async function loadKey(job, descriptor) {
+    if (!job.keys.has(descriptor.id)) {
+      const pending = request(job, descriptor.url).then(({ buffer }) => {
+        if (buffer.length !== 16) throw new Error(`密钥长度异常（${buffer.length} 字节）`)
+        return buffer
+      })
+      job.keys.set(descriptor.id, pending)
+      pending.catch(() => job.keys.delete(descriptor.id))
+    }
+    return job.keys.get(descriptor.id)
+  }
+
+  function keyDescriptor(key, baseUrl, trackId, isMap = false) {
+    if (!key) return null
+    if (key.METHOD !== 'AES-128' || key.KEYFORMAT !== 'identity') {
+      throw new Error(`暂不支持该流的加密方式（${key.METHOD} / ${key.KEYFORMAT}）`)
+    }
+    if (isMap && !key.IV) throw new Error('加密初始化段必须提供显式 IV')
+    const url = resolveSource(key.URI, baseUrl)
+    return { url, iv: key.IV, id: `${trackId}:${key.epoch}:${url}` }
+  }
+
+  async function loadTrack(job, url, id, depth = 0) {
+    if (depth >= 5) throw new Error('播放列表嵌套层级过多，无法解析')
+    const { text, url: finalUrl } = await fetchPlaylist(job, url)
+    const playlist = parseM3u8(text)
+    if (playlist.isMaster) {
+      const variant = playlist.variants
+        .filter((item) => item.uri && !item.isIFrameOnly)
+        .sort((a, b) => b.bandwidth - a.bandwidth)[0]
+      if (!variant) throw new Error('播放列表里没有可用的完整流')
+      const tracks = await loadTrack(job, resolveSource(variant.uri, finalUrl), id, depth + 1)
+      const audio =
+        variant.audio.find((item) => item.isDefault) ||
+        variant.audio.find((item) => item.autoselect) ||
+        variant.audio[0]
+      // 无 URI 的 AUDIO 声明表示音频已包含在主流中，不另建下载任务。
+      if (audio?.uri) {
+        if (tracks.length > 1) throw new Error('嵌套列表包含重复的独立音轨')
+        const audioTracks = await loadTrack(
+          job,
+          resolveSource(audio.uri, finalUrl),
+          'audio',
+          depth + 1
+        )
+        if (audioTracks.length !== 1) throw new Error('独立音轨不能再包含分轨主列表')
+        tracks.push(audioTracks[0])
+      }
+      return tracks
+    }
+    if (playlist.live) throw new Error('这是直播流（播放列表未结束），暂不支持下载直播')
+    if (playlist.isIFrameOnly) throw new Error('仅关键帧播放列表不能作为完整视频下载')
+    if (!playlist.segments.length) throw new Error('播放列表里没有分片')
+    const maps = new Map()
+    const segments = playlist.segments.map((segment) => {
+      if (segment.gap) throw new Error('播放列表包含缺失分片（EXT-X-GAP），无法完整下载')
+      let map = null
+      if (segment.map) {
+        const value = segment.map
+        if (!maps.has(value.epoch)) {
+          maps.set(value.epoch, {
+            url: resolveSource(value.uri, finalUrl),
+            range: value.byteRange,
+            key: keyDescriptor(value.key, finalUrl, id, true),
+            sequence: 0,
+            isMap: true,
+            file: `${id}-map-${pad(value.epoch)}.part`
+          })
+        }
+        map = maps.get(value.epoch)
+      }
+      return {
+        url: resolveSource(segment.uri, finalUrl),
+        range: segment.byteRange,
+        key: keyDescriptor(segment.key, finalUrl, id),
+        sequence: segment.sequence,
+        duration: segment.duration,
+        discontinuity: segment.discontinuity,
+        map,
+        trackId: id
+      }
+    })
+    return [{ id, url: finalUrl, segments, maps: [...maps.values()] }]
   }
 
   async function preparePlan(job) {
-    let url = job.task.uri
-    for (let depth = 0; depth < 3; depth++) {
-      const { text, url: finalUrl } = await fetchPlaylist(job, url)
-      const playlist = parseM3u8(text)
-      if (playlist.isMaster) {
-        const best = playlist.variants
-          .filter((variant) => variant.uri)
-          .sort((a, b) => b.bandwidth - a.bandwidth)[0]
-        if (!best) throw new Error('播放列表里没有可用的流')
-        url = resolveSource(best.uri, finalUrl)
-        continue
-      }
-      if (!playlist.segments.length) throw new Error('播放列表里没有分片')
-      if (playlist.live) throw new Error('这是直播流（播放列表未结束），暂不支持下载直播')
-      const unsupported = playlist.segments.find(
-        (segment) => segment.key && segment.key.METHOD !== 'AES-128'
+    const tracks = await loadTrack(job, job.task.uri, 'main')
+    const segments = tracks.flatMap((track) => track.segments)
+    const maps = tracks.flatMap((track) => track.maps)
+    segments.forEach((segment, index) => {
+      segment.file = `${pad(index)}.part`
+    })
+    const needsMux =
+      tracks.length > 1 ||
+      tracks.some(
+        (track) =>
+          new Set(track.segments.map((segment) => segment.map?.file)).size > 1 ||
+          track.segments.some((segment) => segment.discontinuity)
       )
-      if (unsupported)
-        throw new Error(`暂不支持该流的加密方式（${unsupported.key.METHOD}），无法下载`)
-
-      const initSegment = playlist.map
-        ? {
-            url: resolveSource(playlist.map.uri, finalUrl),
-            range: parseRangeValue(playlist.map.byteRange, -1),
-            key: playlist.segments[0].key || null
-          }
-        : null
-      const segments = playlist.segments.map((segment, index) => ({
-        url: resolveSource(segment.uri, finalUrl),
-        range: segment.byteRange,
-        key:
-          segment.key && segment.key.URI
-            ? { url: resolveSource(segment.key.URI, finalUrl), iv: segment.key.IV || '' }
-            : null,
-        sequence: playlist.mediaSequence + index
-      }))
-      const ext = initSegment ? '.mp4' : '.ts'
-      // 命名跟随用户填写的原始链接：主播放列表跳转到变体后，变体名往往是 CDN 内部名
-      const name = targetName(job.task, job.task.uri, ext)
-      const finalPath = join(job.task.dir, name)
-      if (existsSync(finalPath))
-        throw new Error(`目标文件已存在：${name}，请换一个文件名或先移走原文件`)
-      const partsDir = join(job.task.dir, `.${name}${PARTS_SUFFIX}`)
-      mkdirSync(partsDir, { recursive: true })
-      if (initSegment) {
-        const initPart = join(partsDir, 'init.part')
-        if (!existsSync(initPart)) {
-          let buffer = Buffer.from(
-            await (await request(job, initSegment.url, initSegment.range)).arrayBuffer()
-          )
-          if (initSegment.key) {
-            const key = await loadKey(job, initSegment.key.url)
-            buffer = aesDecrypt(buffer, key, ivBuffer(initSegment.key.iv, playlist.mediaSequence))
-          }
-          const tmp = `${initPart}.tmp`
-          await writeFile(tmp, buffer)
-          await rename(tmp, initPart)
-          job.completedBytes += buffer.length
-        }
-      }
-      job.plan = { segments, total: segments.length }
-      job.partsDir = partsDir
-      job.finalPath = finalPath
-      job.totalEstimate = 0
-      scanParts(job)
-      return
+    if (needsMux && (!ffmpegPath || !existsSync(ffmpegPath))) {
+      throw new Error('此播放列表需要 FFmpeg 合成音轨或处理初始化段切换，请安装项目内置 FFmpeg')
     }
-    throw new Error('播放列表嵌套层级过多，无法解析')
-  }
-
-  function scanParts(job) {
-    job.doneSet = new Set()
-    job.completedBytes = job.plan.segments.reduce((sum, _segment, index) => {
-      const part = partPath(job, index)
-      if (!existsSync(part)) return sum
-      const size = statSync(part).size
-      if (size <= 0) return sum
-      job.doneSet.add(index)
-      return sum + size
-    }, job.completedBytes)
+    const resources = [...segments, ...maps]
+    // 在决定复用分片前验证实际 Key，避免同 URI 的密钥轮换或继续下载时的旧缓存。
+    for (const resource of resources) {
+      job.controller.signal.throwIfAborted()
+      const keyHash = resource.key ? digest(await loadKey(job, resource.key)) : null
+      resource.identity = digest(
+        JSON.stringify({
+          url: resourceIdentity(resource.url),
+          range: resource.range,
+          sequence: resource.sequence,
+          duration: resource.duration || 0,
+          discontinuity: Boolean(resource.discontinuity),
+          key: resource.key ? { hash: keyHash, iv: resource.key.iv } : null,
+          map: resource.map
+            ? {
+                url: resourceIdentity(resource.map.url),
+                range: resource.map.range,
+                key: resource.map.key
+                  ? {
+                      hash: digest(await loadKey(job, resource.map.key)),
+                      iv: resource.map.key.iv
+                    }
+                  : null
+              }
+            : null
+        })
+      )
+    }
+    const ext = maps.length || needsMux ? '.mp4' : '.ts'
+    let name = targetName(job.task, job.task.uri, ext)
+    if (ext === '.mp4' && !/\.(mp4|m4a)$/i.test(name)) name = name.replace(/\.[^.]+$/, '.mp4')
+    const finalPath = join(job.task.dir, name)
+    if (existsSync(finalPath))
+      throw new Error(`目标文件已存在：${name}，请换一个文件名或先移走原文件`)
+    const partsDir = join(job.task.dir, `.${name}${PARTS_SUFFIX}`)
+    mkdirSync(partsDir, { recursive: true })
+    job.plan = { tracks, segments, resources, needsMux, total: resources.length }
+    job.partsDir = partsDir
+    job.finalPath = finalPath
+    const identity = digest(
+      JSON.stringify({
+        source: resourceIdentity(job.task.uri),
+        tracks: tracks.map((track) => ({ id: track.id, url: resourceIdentity(track.url) })),
+        resources: resources.map((resource) => resource.identity)
+      })
+    )
+    job.storage = await openStorage(partsDir, identity, resources, job.controller.signal)
+    job.doneSet = job.storage.done
     job.done = job.doneSet.size
+    job.completedBytes = job.storage.bytes
     job.cursor = 0
     refreshEstimate(job)
   }
@@ -369,17 +375,20 @@ export function createHlsDriver({
   }
 
   async function downloadSegment(job, index) {
-    const segment = job.plan.segments[index]
+    const segment = job.plan.resources[index]
     const startedAt = Date.now()
-    let buffer = Buffer.from(await (await request(job, segment.url, segment.range)).arrayBuffer())
+    let { buffer } = await request(job, segment.url, segment.range)
     if (segment.key) {
-      const key = await loadKey(job, segment.key.url)
+      const key = await loadKey(job, segment.key)
       buffer = aesDecrypt(buffer, key, ivBuffer(segment.key.iv, segment.sequence))
     }
-    const part = partPath(job, index)
-    const tmp = `${part}.${randomUUID().slice(0, 8)}.tmp`
-    await writeFile(tmp, buffer)
-    await rename(tmp, part)
+    if (!buffer.length) throw new Error('分片解密后内容为空')
+    if (
+      /^\s*(?:<!doctype\s+html|<html|<head|<body)\b/i.test(buffer.subarray(0, 256).toString('utf8'))
+    ) {
+      throw new Error('分片返回了 HTML 验证页面，请检查 Cookie 或链接有效期')
+    }
+    await job.storage.commit(index, buffer)
     job.doneSet.add(index)
     job.done++
     job.completedBytes += buffer.length
@@ -387,97 +396,173 @@ export function createHlsDriver({
     log(`${job.gid} 分片${index} 完成 (${Date.now() - startedAt}ms, ${buffer.length}字节)`)
   }
 
+  function runFfmpeg(job, args, allowFailure = false) {
+    job.controller.signal.throwIfAborted()
+    return new Promise((resolve, reject) => {
+      const child = spawnImpl(ffmpegPath, ['-nostdin', '-hide_banner', ...args], {
+        windowsHide: true
+      })
+      let stderr = ''
+      let timedOut = false
+      const onAbort = () => child.kill()
+      job.controller.signal.addEventListener('abort', onAbort, { once: true })
+      const timer = setTimeout(() => {
+        timedOut = true
+        child.kill()
+      }, ffmpegTimeoutMs)
+      const cleanup = () => {
+        clearTimeout(timer)
+        job.controller.signal.removeEventListener('abort', onAbort)
+      }
+      child.stderr?.on('data', (chunk) => {
+        stderr = (stderr + chunk).slice(-32768)
+      })
+      child.on('error', (error) => {
+        cleanup()
+        reject(new Error(`FFmpeg 无法启动：${error.message}`))
+      })
+      child.on('close', (code) => {
+        cleanup()
+        if (job.controller.signal.aborted) return reject(job.controller.signal.reason)
+        if (timedOut) return reject(new Error('FFmpeg 处理超时，分片已保留供重试'))
+        if (code !== 0 && !allowFailure)
+          return reject(new Error(`FFmpeg 合成失败：${stderr.slice(-1500)}`))
+        resolve({ ok: code === 0, stderr })
+      })
+    })
+  }
+
+  async function localPlaylist(job, track) {
+    const lines = [
+      '#EXTM3U',
+      '#EXT-X-VERSION:7',
+      '#EXT-X-PLAYLIST-TYPE:VOD',
+      `#EXT-X-TARGETDURATION:${Math.ceil(Math.max(...track.segments.map((item) => item.duration)))}`
+    ]
+    let previousMap = null
+    for (const segment of track.segments) {
+      if (segment.discontinuity) lines.push('#EXT-X-DISCONTINUITY')
+      if (segment.map && segment.map.file !== previousMap) {
+        lines.push(`#EXT-X-MAP:URI="${segment.map.file}"`)
+        previousMap = segment.map.file
+      }
+      lines.push(`#EXTINF:${segment.duration},`, segment.file)
+    }
+    lines.push('#EXT-X-ENDLIST')
+    const path = join(job.partsDir, `${track.id}.local.m3u8`)
+    await writeFile(path, lines.join('\n'), 'utf8')
+    return path
+  }
+
   async function merge(job) {
-    const temp = `${job.finalPath}.merging`
+    const temp = join(job.partsDir, 'output.merging')
+    let finalPath = job.finalPath
     rmSync(temp, { force: true })
-    const out = createWriteStream(temp)
     try {
-      for (let index = 0; index < job.plan.total; index++) {
-        if (!job.doneSet.has(index)) throw new Error('分片缺失，无法合并')
-        const buffer = await readFile(partPath(job, index))
-        if (!out.write(buffer)) await once(out, 'drain')
+      if (job.plan.needsMux) {
+        const args = ['-y']
+        for (const track of job.plan.tracks) {
+          const playlist = await localPlaylist(job, track)
+          args.push(
+            '-protocol_whitelist',
+            'file',
+            '-allowed_extensions',
+            'ALL',
+            '-allowed_segment_extensions',
+            'ALL',
+            '-extension_picky',
+            '0',
+            '-i',
+            playlist
+          )
+        }
+        if (job.plan.tracks.length > 1) args.push('-map', '0:v:0', '-map', '1:a:0')
+        else args.push('-map', '0:v?', '-map', '0:a?')
+        args.push(
+          '-c',
+          'copy',
+          '-movflags',
+          '+faststart',
+          '-f',
+          /\.m4a$/i.test(job.finalPath) ? 'ipod' : 'mp4',
+          temp
+        )
+        await runFfmpeg(job, args)
+      } else {
+        const track = job.plan.tracks[0]
+        const chunks = async function* () {
+          if (track.segments[0].map) {
+            job.controller.signal.throwIfAborted()
+            yield await readFile(join(job.partsDir, track.segments[0].map.file))
+          }
+          for (const segment of track.segments) {
+            job.controller.signal.throwIfAborted()
+            yield await readFile(join(job.partsDir, segment.file))
+          }
+        }
+        await pipeline(Readable.from(chunks()), createWriteStream(temp, { flags: 'wx' }), {
+          signal: job.controller.signal
+        })
       }
-      out.end()
-      await once(out, 'finish')
+      job.controller.signal.throwIfAborted()
+      let output = temp
+      // 简单 TS 可以直接保存；有 FFmpeg 时无损转封装。源分片保留到最终发布成功。
+      if (!job.plan.needsMux && ffmpegPath && existsSync(ffmpegPath)) {
+        const probe = await runFfmpeg(job, ['-i', temp], true)
+        if (!/Stream #\d+:\d+.*: (Video|Audio):/.test(probe.stderr)) {
+          throw new Error('FFmpeg 无法识别下载内容中的音视频流')
+        }
+        const hasVideo = /Stream #\d+:\d+.*: Video:/.test(probe.stderr)
+        if (!job.plan.tracks[0].maps.length) {
+          const target = job.finalPath.replace(/\.[^.]+$/, hasVideo ? '.mp4' : '.m4a')
+          if (existsSync(target)) throw new Error(`目标文件已存在：${target}`)
+          output = join(job.partsDir, 'output.remuxing')
+          await runFfmpeg(job, [
+            '-y',
+            '-i',
+            temp,
+            '-c',
+            'copy',
+            '-movflags',
+            '+faststart',
+            '-f',
+            hasVideo ? 'mp4' : 'ipod',
+            output
+          ])
+          finalPath = target
+        }
+      }
+      job.controller.signal.throwIfAborted()
+      const size = statSync(output).size
+      if (!size) throw new Error('合并结果为空')
+      await link(output, finalPath)
+      if (job.controller.signal.aborted) {
+        rmSync(finalPath, { force: true })
+        job.controller.signal.throwIfAborted()
+      }
+      job.completedBytes = size
+      job.totalEstimate = size
+      job.finalPath = finalPath
+      job.status = 'complete'
       try {
-        await rename(temp, job.finalPath)
+        rmSync(job.partsDir, { recursive: true, force: true })
       } catch {
-        rmSync(temp, { force: true })
-        throw new Error(`目标文件已存在：${job.finalPath}`)
+        log(`${job.gid} 输出已完成，临时目录清理失败`)
       }
-      job.totalEstimate = job.completedBytes
-      rmSync(job.partsDir, { recursive: true, force: true })
     } catch (error) {
-      out.destroy()
       rmSync(temp, { force: true })
       throw error
     }
   }
 
-  function runFfmpeg(args) {
-    return new Promise((resolve) => {
-      const child = spawn(ffmpegPath, args, { windowsHide: true })
-      let stderr = ''
-      child.stderr?.on('data', (chunk) => {
-        stderr += chunk.toString()
-        if (stderr.length > 64 * 1024) stderr = stderr.slice(-32 * 1024)
-      })
-      child.on('error', () => resolve({ ok: false, stderr: '' }))
-      child.on('close', (code) => resolve({ ok: code === 0, stderr }))
-    })
-  }
-
-  // 合并出 .ts 后，若内置 ffmpeg 可用则无损转封装为 .m4a/.mp4，方便手机直接播放。
-  // 转封装失败不致命：保留 .ts，任务照常完成。
-  async function remux(job) {
-    if (!ffmpegPath || !existsSync(ffmpegPath) || !job.finalPath.endsWith('.ts')) return
-    // -i 不带输出参数时 ffmpeg 必然报错退出，但 stderr 里带完整的流信息
-    const probe = await runFfmpeg(['-hide_banner', '-i', job.finalPath])
-    const hasVideo = /Stream #\d+:\d+.*: Video:/.test(probe.stderr)
-    const target = job.finalPath.replace(/\.ts$/, hasVideo ? '.mp4' : '.m4a')
-    if (existsSync(target)) return
-    const temp = `${target}.remuxing`
-    rmSync(temp, { force: true })
-    // 输出格式显式指定（ipod 即 m4a），临时文件的后缀 ffmpeg 不认识
-    const result = await runFfmpeg([
-      '-y',
-      '-hide_banner',
-      '-i',
-      job.finalPath,
-      '-c',
-      'copy',
-      '-movflags',
-      '+faststart',
-      '-f',
-      hasVideo ? 'mp4' : 'ipod',
-      temp
-    ])
-    if (!result.ok) {
-      rmSync(temp, { force: true })
-      return
-    }
-    try {
-      await rename(temp, target)
-      rmSync(job.finalPath, { force: true })
-      job.finalPath = target
-      job.completedBytes = statSync(target).size
-      job.totalEstimate = job.completedBytes
-    } catch {
-      rmSync(temp, { force: true })
-    }
-  }
-
-  // 领取下一个未完成的分片；优先重试此前失败被回队的分片
   function takeSegment(job) {
-    if (job.retries.length) return job.retries.shift()
+    const retry = job.retries.findIndex((item) => item.readyAt <= Date.now())
+    if (retry >= 0) return job.retries.splice(retry, 1)[0].index
     while (job.cursor < job.plan.total && job.doneSet.has(job.cursor)) job.cursor++
     return job.cursor < job.plan.total ? job.cursor++ : -1
   }
 
-  // 线路不稳（连接中断、字节不完整等）时降并发；连续成功后逐级恢复。
-  // 重试等待按“分片自身第几次失败”指数增长，分片之间互不拖累
   function throttleDown(job) {
-    // 成功率计数减半而非清零：间歇性抽风不该让并发永远爬不回去
     job.successStreak = Math.floor(job.successStreak / 2)
     const before = job.currentLimit
     job.currentLimit = Math.max(1, Math.floor(job.currentLimit / 2))
@@ -510,18 +595,23 @@ export function createHlsDriver({
           if (error.name === 'AbortError') throw error
           job.attempts[index] = (job.attempts[index] || 0) + 1
           log(`${job.gid} 分片${index} 第${job.attempts[index]}次失败: ${error.message}`)
-          if (job.attempts[index] >= job.maxSegmentAttempts) {
+          if (error.fatal || job.attempts[index] >= job.maxSegmentAttempts) {
             job.status = 'error'
             job.errorMessage = `分片 ${index + 1} 连续下载失败：${error.message}`
             log(`${job.gid} 任务失败: ${job.errorMessage}`)
+            job.controller.abort()
             throw error
           }
           throttleDown(job)
-          job.retries.push(index)
-          await abortableSleep(
-            Math.min(errorBackoffMaxMs, errorBackoffBaseMs * 2 ** (job.attempts[index] - 1)),
-            job.controller.signal
+          const delay = Math.min(
+            errorBackoffMaxMs,
+            errorBackoffBaseMs * 2 ** (job.attempts[index] - 1)
           )
+          job.retries.push({
+            index,
+            readyAt: Date.now() + delay
+          })
+          await abortableSleep(delay, job.controller.signal)
         }
       }
     } finally {
@@ -535,12 +625,19 @@ export function createHlsDriver({
       while (job.status === 'active' && !job.controller.signal.aborted) {
         while (
           job.activeWorkers < job.currentLimit &&
-          (job.retries.length > 0 || job.cursor < job.plan.total)
+          (job.retries.some((item) => item.readyAt <= Date.now()) || job.cursor < job.plan.total)
         ) {
           const promise = worker(job).finally(() => workers.delete(promise))
           workers.add(promise)
         }
-        if (!workers.size) break
+        if (!workers.size) {
+          if (!job.retries.length) break
+          await abortableSleep(
+            Math.max(1, Math.min(...job.retries.map((item) => item.readyAt)) - Date.now()),
+            job.controller.signal
+          )
+          continue
+        }
         // worker 退出（降速、升速或队列暂空）后，按最新上限补齐。
         await Promise.race(workers)
       }
@@ -571,8 +668,6 @@ export function createHlsDriver({
         job.totalEstimate = Math.max(job.totalEstimate, job.completedBytes)
         log(`${job.gid} 全部分片完成，开始合并 ${job.finalPath}`)
         await merge(job)
-        await remux(job)
-        job.status = 'complete'
         log(`${job.gid} 任务完成 -> ${job.finalPath}`)
       } else {
         // 有分片始终没下下来（不应发生），避免任务卡在 active
@@ -580,7 +675,7 @@ export function createHlsDriver({
         job.errorMessage = '部分分片未能下载，请重试任务'
       }
     } catch (error) {
-      if (job.status !== 'paused' && error.name !== 'AbortError') {
+      if (!['paused', 'cancelled'].includes(job.status) && error.name !== 'AbortError') {
         job.status = 'error'
         // worker 内部已写过更具体的原因（如分片失败次数达上限）时不要覆盖
         job.errorMessage ||= error.message || '下载失败'
@@ -589,22 +684,24 @@ export function createHlsDriver({
   }
 
   function snapshot(job, now) {
+    // 错误状态等旧 worker 清理结束后再对外发布，避免立即重试与旧写盘竞争。
+    const status = job.status === 'error' && job.running ? 'active' : job.status
     if (job.status === 'active') {
       const sample = job.lastSample
       if (sample.time) {
         const seconds = (now - sample.time) / 1000
         if (seconds > 0.25) {
-          const instant = Math.max(0, (job.completedBytes - sample.bytes) / seconds)
+          const instant = Math.max(0, (job.transferredBytes - sample.bytes) / seconds)
           job.speed = job.speed ? job.speed * 0.6 + instant * 0.4 : instant
-          job.lastSample = { time: now, bytes: job.completedBytes }
+          job.lastSample = { time: now, bytes: job.transferredBytes }
         }
       } else {
-        job.lastSample = { time: now, bytes: job.completedBytes }
+        job.lastSample = { time: now, bytes: job.transferredBytes }
       }
     }
     const total = Math.max(job.totalEstimate, job.completedBytes)
     return {
-      status: job.status,
+      status,
       totalLength: total,
       completedLength: job.completedBytes,
       downloadSpeed: job.status === 'active' ? Math.round(job.speed) : 0,
@@ -652,6 +749,8 @@ export function createHlsDriver({
         totalEstimate: 0,
         speed: 0,
         lastSample: { time: 0, bytes: 0 },
+        transferredBytes: 0,
+        storage: null,
         activeWorkers: 0,
         running: false,
         runPromise: null
@@ -688,6 +787,10 @@ export function createHlsDriver({
       job.completedBytes = 0
       job.totalEstimate = 0
       job.currentLimit = 0
+      job.successStreak = 0
+      job.speed = 0
+      job.transferredBytes = 0
+      job.keys.clear()
       log(`${job.gid} 手动继续，重拉列表并重置调速`)
       void start(job)
     },
@@ -696,10 +799,15 @@ export function createHlsDriver({
       if (!job) return
       job.status = job.status === 'complete' ? job.status : 'cancelled'
       job.controller.abort()
+      if (job.runPromise) await job.runPromise.catch(() => {})
       jobs.delete(gid)
     },
     async destroy() {
-      for (const job of jobs.values()) job.controller.abort()
+      for (const job of jobs.values()) {
+        if (job.status === 'active') job.status = 'cancelled'
+        job.controller.abort()
+      }
+      await Promise.allSettled([...jobs.values()].map((job) => job.runPromise))
       jobs.clear()
     }
   }

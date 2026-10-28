@@ -12,7 +12,7 @@ export function createAria2Service({ getWindow }) {
   const exe = app.isPackaged
     ? join(process.resourcesPath, 'bin', process.platform, binary)
     : join(app.getAppPath(), 'resources', 'bin', process.platform, binary)
-  // ffmpeg 与 aria2c 同目录打包；缺失时 HLS 下载完保留 .ts，不转封装
+  // ffmpeg 与 aria2c 同目录打包；缺失时简单 TS 可保存，分轨/Map 切换明确报错。
   const ffmpegName = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
   const ffmpegPath = app.isPackaged
     ? join(process.resourcesPath, 'bin', process.platform, ffmpegName)

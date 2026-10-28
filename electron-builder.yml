@@ -3,6 +3,10 @@ productName: Nox Downloader
 directories:
   buildResources: build
 files:
+  - '!resources/bin/**'
+  - '!dist/**'
+  - '!tests/**'
+  - '!scripts/**'
   - '!**/.vscode/*'
   - '!src/*'
   - '!electron.vite.config.{js,ts,mjs,cjs}'
@@ -13,6 +17,12 @@ asarUnpack:
 extraResources:
   - from: resources/bin
     to: bin
+    filter:
+      - '**/*'
+      - '!**/*.zip'
+      - '!**/*.7z'
+      - '!**/.gitkeep'
+beforePack: ./scripts/check-binaries.cjs
 win:
   icon: build/deepblack-download.ico
   executableName: nox-downloader

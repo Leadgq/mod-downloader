@@ -68,7 +68,7 @@ test('parseM3u8 解析媒体播放列表（密钥、初始化段、字节范围�
     'seg0.ts',
     '#EXT-X-BYTERANGE:2000',
     '#EXTINF:4,',
-    'seg1.ts',
+    'seg0.ts',
     '#EXT-X-ENDLIST'
   ].join('\n')
   const playlist = parseM3u8(text)
