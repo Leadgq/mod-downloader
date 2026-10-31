@@ -99,8 +99,8 @@ function registerIpc() {
 }
 
 app.whenReady().then(() => {
-  aria2 = createAria2Service({ getWindow: () => mainWindow })
   electronApp.setAppUserModelId('com.moddownloader.app')
+  aria2 = createAria2Service({ getWindow: () => mainWindow })
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)

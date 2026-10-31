@@ -1,4 +1,4 @@
-import { app } from 'electron'
+import { app, Notification, shell } from 'electron'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { createAria2Driver } from './aria2-driver.mjs'
@@ -8,6 +8,7 @@ import { createCompositeDriver } from './driver.mjs'
 import { chromiumFetch } from './hls/chromium-fetch.mjs'
 
 export function createAria2Service({ getWindow }) {
+  const notifications = new Set()
   const binary = process.platform === 'win32' ? 'aria2c.exe' : 'aria2c'
   const exe = app.isPackaged
     ? join(process.resourcesPath, 'bin', process.platform, binary)
@@ -27,6 +28,20 @@ export function createAria2Service({ getWindow }) {
       })
     }),
     historyPath: join(app.getPath('userData'), 'download-history.json'),
+    onComplete: (task) => {
+      if (!Notification.isSupported()) return
+      const notification = new Notification({
+        title: '下载完成',
+        body: task.filename || '文件已下载完成'
+      })
+      notifications.add(notification)
+      notification.on('close', () => notifications.delete(notification))
+      notification.on('click', () => {
+        if (task.filePath && existsSync(task.filePath)) shell.showItemInFolder(task.filePath)
+        else if (existsSync(task.dir)) void shell.openPath(task.dir)
+      })
+      notification.show()
+    },
     onChange: (state) => {
       const window = getWindow()
       if (window && !window.isDestroyed()) window.webContents.send('download:changed', state)

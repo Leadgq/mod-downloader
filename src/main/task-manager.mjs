@@ -47,6 +47,7 @@ export function createTaskManager({
   driver,
   historyPath,
   onChange = () => {},
+  onComplete = () => {},
   pollMs = 500,
   saveMs = 2000
 }) {
@@ -139,6 +140,7 @@ export function createTaskManager({
     return task
   }
   function update(task, status) {
+    const wasComplete = task.status === 'complete'
     task.completedLength = number(status.completedLength)
     task.totalLength = number(status.totalLength)
     task.downloadSpeed = status.status === 'active' ? number(status.downloadSpeed) : 0
@@ -160,6 +162,13 @@ export function createTaskManager({
       }
       task.errorMessage = status.errorMessage || ''
       task.updatedAt = Date.now()
+      if (status.status === 'complete' && !wasComplete) {
+        try {
+          onComplete(task)
+        } catch {
+          // 通知失败不能让已完成的下载变成引擎错误。
+        }
+      }
     }
   }
   function failEngine(error) {

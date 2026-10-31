@@ -6,6 +6,27 @@ import { join } from 'node:path'
 import { createTaskManager } from '../src/main/task-manager.mjs'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+test('下载完成时只通知一次，读取历史记录不通知', async (t) => {
+  const completed = []
+  const f = fixture(t, { onComplete: (task) => completed.push(task.filename) })
+  const id = await f.add('notify')
+  f.complete(id)
+  await until(() => completed.length === 1)
+  assert.deepEqual(completed, ['notify.zip'])
+  assert.equal(f.task(id).status, 'complete')
+
+  const restored = createTaskManager({
+    driver: f.driver,
+    historyPath: f.historyPath,
+    pollMs: 10000,
+    onComplete: (task) => completed.push(task.filename)
+  })
+  t.after(() => restored.destroy())
+  assert.equal(restored.list().tasks[0].status, 'complete')
+  assert.deepEqual(completed, ['notify.zip'])
+})
+
 async function until(check) {
   for (let i = 0; i < 100; i++) {
     if (check()) return
