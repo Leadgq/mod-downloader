@@ -157,10 +157,14 @@ app.whenReady().then(async () => {
     )
     await click('浏览')
     await waitFor(`document.querySelector('#task-dir').value === ${JSON.stringify(dir)}`)
+    await run(
+      "(() => { const input = document.querySelector('#task-cookie'); input.value = 'private=test-cookie'; input.dispatchEvent(new Event('input', { bubbles: true })) })()"
+    )
     await click('添加下载')
     await waitFor(
       "document.querySelectorAll('.task-card').length === 6 && !document.querySelector('.el-overlay-dialog')?.offsetHeight"
     )
+    assert.equal((await run("localStorage.getItem('mod-downloader')")).includes('test-cookie'), false)
     await run(
       "(() => { const input = document.querySelector('.search input'); input.value = 'new.zip'; input.dispatchEvent(new Event('input', { bubbles: true })) })()"
     )
@@ -168,6 +172,17 @@ app.whenReady().then(async () => {
     await click('取消')
     await waitFor("document.querySelector('.task-cancelled')")
     assert.equal(manager.list().tasks.at(-1).status, 'cancelled')
+    const completedState = manager.list()
+    const finishedTask = completedState.tasks.find((task) => task.status === 'active')
+    finishedTask.status = 'complete'
+    completedState.revision++
+    window.webContents.send('download:changed', completedState)
+    await waitFor(
+      `document.querySelector('.el-notification')?.textContent.includes(${JSON.stringify(finishedTask.filename)})`
+    )
+    window.webContents.send('download:changed', completedState)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    assert.equal(await run("document.querySelectorAll('.el-notification').length"), 1)
     assert.deepEqual(failures, [])
     writeFileSync(join(output, 'result.json'), JSON.stringify({ passed: true }))
     console.log(

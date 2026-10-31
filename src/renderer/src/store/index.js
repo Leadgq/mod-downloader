@@ -7,7 +7,6 @@ export const useConfigStore = defineStore('config', {
     dir: '',
     filename: '',
     connections: 8,
-    cookie: '',
     welcomed: false
   }),
   persist: {
@@ -15,7 +14,8 @@ export const useConfigStore = defineStore('config', {
     strategies: [
       {
         key: 'mod-downloader',
-        storage: localStorage
+        storage: localStorage,
+        paths: ['url', 'query', 'dir', 'filename', 'connections', 'welcomed']
       }
     ]
   }

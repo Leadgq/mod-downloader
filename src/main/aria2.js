@@ -29,6 +29,8 @@ export function createAria2Service({ getWindow }) {
     }),
     historyPath: join(app.getPath('userData'), 'download-history.json'),
     onComplete: (task) => {
+      const window = getWindow()
+      if (window && !window.isDestroyed() && window.isFocused()) return
       if (!Notification.isSupported()) return
       const notification = new Notification({
         title: '下载完成',

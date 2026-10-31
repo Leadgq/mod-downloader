@@ -342,7 +342,7 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElNotification } from 'element-plus'
 import { Delete, Document, Download, MoreFilled, Plus, Search } from '@element-plus/icons-vue'
 import { useConfigStore } from '@renderer/store'
 
@@ -425,8 +425,52 @@ function remaining(task) {
   return `${Math.floor(seconds / 3600)} 小时 ${Math.floor((seconds % 3600) / 60)} 分`
 }
 const date = (value) => (value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '--')
+function playCompletionSound() {
+  const AudioContext = window.AudioContext || window.webkitAudioContext
+  if (!AudioContext) return
+  try {
+    const audio = new AudioContext()
+    const start = audio.currentTime
+    for (const [offset, frequency] of [[0, 784], [0.16, 1046]]) {
+      const tone = audio.createOscillator()
+      const volume = audio.createGain()
+      tone.type = 'sine'
+      tone.frequency.value = frequency
+      volume.gain.setValueAtTime(0, start + offset)
+      volume.gain.linearRampToValueAtTime(0.12, start + offset + 0.02)
+      volume.gain.exponentialRampToValueAtTime(0.001, start + offset + 0.18)
+      tone.connect(volume).connect(audio.destination)
+      tone.start(start + offset)
+      tone.stop(start + offset + 0.18)
+    }
+    if (audio.state === 'suspended') void audio.resume().catch(() => {})
+    setTimeout(() => void audio.close(), 500)
+  } catch {
+    // 音频不可用时仍显示完成提示。
+  }
+}
+function showCompletion(task) {
+  playCompletionSound()
+  ElNotification({
+    title: '下载完成',
+    message: `${displayName(task)} · 点击打开所在文件夹`,
+    type: 'success',
+    position: 'bottom-right',
+    duration: 8000,
+    onClick: () => void openTarget(task, 'dir')
+  })
+}
 function apply(data) {
-  if (data.revision >= state.revision) Object.assign(state, data)
+  if (data.revision < state.revision) return
+  if (state.revision >= 0) {
+    const previous = new Map(state.tasks.map((task) => [task.id, task.status]))
+    for (const task of data.tasks) {
+      if (task.status === 'complete' && previous.has(task.id) && previous.get(task.id) !== 'complete') {
+        showCompletion(task)
+      }
+    }
+  }
+  Object.assign(state, data)
 }
 async function load() {
   loading.value = true
@@ -457,7 +501,7 @@ function openNew() {
     dir: store.dir,
     filename: store.filename,
     query: store.query.map((item) => ({ ...item })),
-    cookie: store.cookie,
+    cookie: '',
     connections: store.connections
   })
   advanced.value = []
@@ -517,8 +561,11 @@ async function submit() {
       ? await window.api.resume(editingId.value, payload)
       : await window.api.add(payload)
     apply(result)
-    if (!editingId.value)
-      Object.assign(store, payload, { query: form.query.map((item) => ({ ...item })) })
+    if (!editingId.value) {
+      const savedSettings = { ...payload }
+      delete savedSettings.cookie
+      Object.assign(store, savedSettings, { query: form.query.map((item) => ({ ...item })) })
+    }
     dialogVisible.value = false
     filter.value = 'all'
     search.value = ''
