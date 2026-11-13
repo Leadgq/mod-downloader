@@ -7,6 +7,8 @@ export {}
 
 declare module 'vue' {
   export interface GlobalComponents {
+    DownloadDialog: typeof import('./src/components/DownloadDialog.vue')['default']
+    DownloadTaskCard: typeof import('./src/components/DownloadTaskCard.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
     ElButton: typeof import('element-plus/es')['ElButton']
     ElCollapse: typeof import('element-plus/es')['ElCollapse']
